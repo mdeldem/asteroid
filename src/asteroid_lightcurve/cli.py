@@ -12,6 +12,7 @@ from .plotting import (
     corrected_magnitudes,
     corrected_model,
     ensure_outdir,
+    format_period,
     plot_folded_lightcurve,
     plot_periodogram,
     plot_residuals,
@@ -44,41 +45,67 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 def cmd_search(args: argparse.Namespace) -> int:
     paths = expand_inputs(args.files)
     curve = read_lightcurve(paths, use_mid_exposure=not args.keep_start_time)
-    periods = period_grid(args.min_period, args.max_period, args.samples)
     outdir = ensure_outdir(args.out)
+    fixed_period_hours = args.period * 24.0 if args.period is not None else None
+    produced_files: list[str] = []
 
-    gls = gls_power(curve, periods)
-    gls_best_period = float(periods[int(np.argmax(gls))])
-    plot_periodogram(
-        periods,
-        gls,
-        gls_best_period,
-        "Puissance GLS",
-        outdir / "gls_periodogram.png",
-    )
+    if fixed_period_hours is None:
+        if args.min_period is None or args.max_period is None:
+            raise SystemExit("--min-period et --max-period sont requis sans --period")
+        periods = period_grid(args.min_period, args.max_period, args.samples)
 
-    best, order_bests = search_fourier(curve, periods, parse_orders(args.orders))
-    best = refine_period(
-        curve,
-        best.period_hours,
-        best.order,
-        width_fraction=args.refine_width,
-        samples=args.refine_samples,
-    )
+        gls = gls_power(curve, periods)
+        gls_best_period = float(periods[int(np.argmax(gls))])
+        plot_periodogram(
+            periods,
+            gls,
+            gls_best_period,
+            "Puissance GLS",
+            outdir / "gls_periodogram.png",
+        )
+        produced_files.append("gls_periodogram.png")
 
-    bic_score = np.full_like(periods, np.nan, dtype=float)
-    for idx, period in enumerate(periods):
-        bic_score[idx] = -search_fourier(curve, np.asarray([period]), range(best.order, best.order + 1))[0].bic
-    plot_periodogram(
-        periods,
-        bic_score,
-        best.period_hours,
-        f"Score Fourier ordre {best.order} (-BIC)",
-        outdir / "fourier_period_search.png",
-    )
+        best, order_bests = search_fourier(curve, periods, parse_orders(args.orders))
+        best = refine_period(
+            curve,
+            best.period_hours,
+            best.order,
+            width_fraction=args.refine_width,
+            samples=args.refine_samples,
+        )
+
+        bic_score = np.full_like(periods, np.nan, dtype=float)
+        for idx, period in enumerate(periods):
+            bic_score[idx] = -search_fourier(curve, np.asarray([period]), range(best.order, best.order + 1))[0].bic
+        plot_periodogram(
+            periods,
+            bic_score,
+            best.period_hours,
+            f"Score Fourier ordre {best.order} (-BIC)",
+            outdir / "fourier_period_search.png",
+        )
+        produced_files.append("fourier_period_search.png")
+    else:
+        if fixed_period_hours <= 0:
+            raise SystemExit("--period doit etre strictement positif")
+        best, order_bests = search_fourier(
+            curve,
+            np.asarray([fixed_period_hours], dtype=float),
+            parse_orders(args.orders),
+        )
+
     plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve.png")
     plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve_by_file.png", by_file=True)
     plot_residuals(curve, best, outdir / "residuals.png")
+    produced_files.extend(
+        [
+            "folded_lightcurve.png",
+            "folded_lightcurve_by_file.png",
+            "residuals.png",
+            "residuals.csv",
+            "fourier_order_summary.csv",
+        ]
+    )
     residual_path = outdir / "residuals.csv"
     corrected_mag = corrected_magnitudes(curve, best)
     corrected_fit = corrected_model(curve, best)
@@ -121,12 +148,13 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     with (outdir / "fourier_order_summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["order", "period_hours", "chi2", "reduced_chi2", "aic", "bic"])
+        writer.writerow(["order", "period_hours", "period_days", "chi2", "reduced_chi2", "aic", "bic"])
         for fit in order_bests:
             writer.writerow(
                 [
                     fit.order,
                     f"{fit.period_hours:.10f}",
+                    f"{fit.period_hours / 24.0:.10f}",
                     f"{fit.chi2:.6f}",
                     f"{fit.reduced_chi2:.6f}",
                     f"{fit.aic:.6f}",
@@ -139,30 +167,28 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Mesures: {curve.n_points}")
     print(f"Baseline: {curve.baseline_days:.6f} jours")
     print()
-    print("=== GLS ===")
-    print(f"Meilleure periode GLS: {gls_best_period:.8f} h")
-    if gls_best_period * 2.0 <= args.max_period:
-        print(f"Candidat double-pic 2 x GLS: {gls_best_period * 2.0:.8f} h")
-    print(f"Puissance GLS: {float(np.max(gls)):.6f}")
-    print("Note: pour un asteroide, GLS peut accrocher P/2 si la courbe est double-pic.")
-    print()
+    if fixed_period_hours is None:
+        print("=== GLS ===")
+        print(f"Meilleure periode GLS: {format_period(gls_best_period)}")
+        if gls_best_period * 2.0 <= args.max_period:
+            print(f"Candidat double-pic 2 x GLS: {format_period(gls_best_period * 2.0)}")
+        print(f"Puissance GLS: {float(np.max(gls)):.6f}")
+        print("Note: pour un asteroide, GLS peut accrocher P/2 si la courbe est double-pic.")
+        print()
+    else:
+        print("=== Periode imposee ===")
+        print(f"Periode: {format_period(fixed_period_hours)}")
+        print("Recherche GLS/Fourier sautee; ajustement Fourier seulement a la periode imposee.")
+        print()
     print("=== Fourier ===")
-    print(f"Meilleure periode: {best.period_hours:.8f} h")
+    print(f"Meilleure periode: {format_period(best.period_hours)}")
     print(f"Ordre retenu: {best.order}")
     print(f"Chi2 reduit: {best.reduced_chi2:.6f}")
     print(f"AIC: {best.aic:.6f}")
     print(f"BIC: {best.bic:.6f}")
     print()
     print("=== Fichiers produits ===")
-    for name in [
-        "gls_periodogram.png",
-        "fourier_period_search.png",
-        "folded_lightcurve.png",
-        "folded_lightcurve_by_file.png",
-        "residuals.png",
-        "residuals.csv",
-        "fourier_order_summary.csv",
-    ]:
+    for name in produced_files:
         print(outdir / name)
     return 0
 
@@ -178,8 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_parser = subparsers.add_parser("search", help="Chercher la periode de rotation")
     search_parser.add_argument("files", nargs="+", help="Fichiers ou motifs glob")
-    search_parser.add_argument("--min-period", type=float, required=True, help="Periode minimale en heures")
-    search_parser.add_argument("--max-period", type=float, required=True, help="Periode maximale en heures")
+    search_parser.add_argument("--min-period", type=float, help="Periode minimale en heures")
+    search_parser.add_argument("--max-period", type=float, help="Periode maximale en heures")
+    search_parser.add_argument(
+        "--period",
+        type=float,
+        help="Periode imposee en jours; saute la recherche de periode",
+    )
     search_parser.add_argument("--samples", type=int, default=8000, help="Nombre d'echantillons de periode")
     search_parser.add_argument("--orders", default="1:12", help="Ordres Fourier, ex: 1:12 ou 4")
     search_parser.add_argument("--refine-width", type=float, default=0.01, help="Demi-largeur relative du raffinement")

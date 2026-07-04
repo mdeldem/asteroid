@@ -23,6 +23,10 @@ def phase(jd: np.ndarray, period_hours: float) -> np.ndarray:
     return ((jd - np.min(jd)) / period_days) % 1.0
 
 
+def format_period(period_hours: float) -> str:
+    return f"{period_hours:.6f} h ({period_hours / 24.0:.8f} j)"
+
+
 def jd_to_date_label(jd: float) -> str:
     unix_epoch_jd = 2440587.5
     dt = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(days=jd - unix_epoch_jd)
@@ -105,7 +109,7 @@ def plot_periodogram(
 ) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(periods_hours, score, color="tab:blue", lw=1.1)
-    ax.axvline(best_period, color="tab:red", lw=1.0, ls="--", label=f"{best_period:.6f} h")
+    ax.axvline(best_period, color="tab:red", lw=1.0, ls="--", label=format_period(best_period))
     ax.set_xlabel("Periode (h)")
     ax.set_ylabel(ylabel)
     ax.legend()
@@ -191,7 +195,7 @@ def plot_folded_lightcurve(
     ax.set_xlabel("Phase")
     ax.set_ylabel("Magnitude corrigee")
     ax.set_title(
-        f"Courbe repliee - P = {fit.period_hours:.6f} h, ordre {fit.order}\n"
+        f"Courbe repliee - P = {format_period(fit.period_hours)}, ordre {fit.order}\n"
         f"T0 = {float(np.min(curve.jd)):.8f} JD",
         fontsize=12,
     )

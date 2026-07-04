@@ -26,7 +26,15 @@ python -m pip install -e .
 asteroid-lc search data\*.txt --min-period 2 --max-period 20 --out output
 ```
 
-Les periodes sont en heures. Les dates des mesures sont converties du debut de pose vers le milieu de pose quand la ligne `POS` fournit un temps de pose.
+Pour la recherche, `--min-period` et `--max-period` sont en heures. Les resultats et graphiques affichent la periode en heures et en jours. Les dates des mesures sont converties du debut de pose vers le milieu de pose quand la ligne `POS` fournit un temps de pose.
+
+Si la periode est deja connue, on peut la fournir en jours et sauter toute la recherche de periode :
+
+```powershell
+asteroid-lc search data\*.txt --period 0.2106178 --out output
+```
+
+Dans ce mode, le programme ajuste seulement le modele Fourier a cette periode imposee, puis produit les courbes repliees et les residus.
 
 Options utiles :
 
@@ -43,4 +51,3 @@ asteroid-lc inspect data\*.txt
 ## Notes de modelisation
 
 Les ajustements incluent par defaut un offset de magnitude par fichier. C'est important quand les donnees viennent de plusieurs nuits, instruments, observateurs ou filtres : les decalages photometriques changent le zero point, mais pas la periode de rotation recherchee.
-
