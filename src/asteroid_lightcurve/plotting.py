@@ -109,7 +109,8 @@ def plot_folded_lightcurve(
     model_phase = np.linspace(0.0, 2.0, 600)
     model = model_at_phase(curve, fit, model_phase)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    figsize = (12, 5) if by_file else (9, 5)
+    fig, ax = plt.subplots(figsize=figsize)
     if by_file:
         markers = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "8"]
         labels = file_date_labels(curve)
@@ -123,13 +124,19 @@ def plot_folded_lightcurve(
                 group_mag,
                 yerr=group_err,
                 fmt=markers[group_id % len(markers)],
-                ms=4,
-                alpha=0.78,
+                ms=3.5,
+                alpha=0.42,
                 capsize=0,
-                elinewidth=0.7,
+                elinewidth=0.45,
                 label=label,
             )
-        ax.legend(ncol=2, fontsize="small")
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.01, 0.5),
+            fontsize="small",
+            frameon=True,
+            borderaxespad=0.0,
+        )
     else:
         ax.errorbar(
             doubled_phase,
@@ -147,7 +154,10 @@ def plot_folded_lightcurve(
     ax.set_title(f"Courbe repliee - P = {fit.period_hours:.6f} h, ordre {fit.order}")
     ax.invert_yaxis()
     ax.grid(alpha=0.25)
-    fig.tight_layout()
+    if by_file:
+        fig.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
+    else:
+        fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
