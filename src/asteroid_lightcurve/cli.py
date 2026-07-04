@@ -27,15 +27,15 @@ def parse_orders(value: str) -> range:
     return range(order, order + 1)
 
 
-def format_uncertainty(value_hours: float | None) -> str:
-    if value_hours is None:
+def format_uncertainty(value_days: float | None) -> str:
+    if value_days is None:
         return "non bornee"
-    return f"{value_hours:.6f} h ({value_hours / 24.0:.8f} j)"
+    return f"{value_days * 24.0:.6f} h ({value_days:.8f} j)"
 
 
 def write_period_summary(
     path: Path,
-    best_period_hours: float,
+    best_period_days: float,
     raw_uncertainty: PeriodUncertainty,
     scaled_uncertainty: PeriodUncertainty,
 ) -> None:
@@ -66,19 +66,19 @@ def write_period_summary(
             writer.writerow(
                 [
                     kind,
-                    f"{best_period_hours:.10f}",
-                    f"{best_period_hours / 24.0:.10f}",
+                    f"{best_period_days * 24.0:.10f}",
+                    f"{best_period_days:.10f}",
                     f"{uncertainty.delta_chi2:.6f}",
                     "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours:.10f}",
                     "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours:.10f}",
                     "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours:.10f}",
                     "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours:.10f}",
                     "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours:.10f}",
-                    "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours / 24.0:.10f}",
-                    "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours / 24.0:.10f}",
-                    "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours / 24.0:.10f}",
-                    "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours / 24.0:.10f}",
-                    "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours / 24.0:.10f}",
+                    "" if uncertainty.lower_days is None else f"{uncertainty.lower_days:.10f}",
+                    "" if uncertainty.upper_days is None else f"{uncertainty.upper_days:.10f}",
+                    "" if uncertainty.minus_days is None else f"{uncertainty.minus_days:.10f}",
+                    "" if uncertainty.plus_days is None else f"{uncertainty.plus_days:.10f}",
+                    "" if uncertainty.symmetric_days is None else f"{uncertainty.symmetric_days:.10f}",
                 ]
             )
 
@@ -102,15 +102,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     paths = expand_inputs(args.files)
     curve = read_lightcurve(paths, use_mid_exposure=not args.keep_start_time)
     outdir = ensure_outdir(args.out)
-    fixed_period_hours = args.period * 24.0 if args.period is not None else None
+    fixed_period_days = args.period
     produced_files: list[str] = []
 
-    if fixed_period_hours is None:
+    if fixed_period_days is None:
         if args.min_period is None or args.max_period is None:
             raise SystemExit("--min-period et --max-period sont requis sans --period")
-        min_period_hours = args.min_period * 24.0
-        max_period_hours = args.max_period * 24.0
-        periods = period_grid(min_period_hours, max_period_hours, args.samples)
+        periods = period_grid(args.min_period, args.max_period, args.samples)
 
         gls = gls_power(curve, periods)
         gls_best_period = float(periods[int(np.argmax(gls))])
@@ -126,7 +124,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         best, order_bests = search_fourier(curve, periods, parse_orders(args.orders))
         best = refine_period(
             curve,
-            best.period_hours,
+            best.period_days,
             best.order,
             width_fraction=args.refine_width,
             samples=args.refine_samples,
@@ -138,17 +136,17 @@ def cmd_search(args: argparse.Namespace) -> int:
         plot_periodogram(
             periods,
             bic_score,
-            best.period_hours,
+            best.period_days,
             f"Score Fourier ordre {best.order} (-BIC)",
             outdir / "fourier_period_search.png",
         )
         produced_files.append("fourier_period_search.png")
     else:
-        if fixed_period_hours <= 0:
+        if fixed_period_days <= 0:
             raise SystemExit("--period doit etre strictement positif")
         best, order_bests = search_fourier(
             curve,
-            np.asarray([fixed_period_hours], dtype=float),
+            np.asarray([fixed_period_days], dtype=float),
             parse_orders(args.orders),
         )
 
@@ -158,7 +156,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     raw_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=1.0)
     scaled_delta = max(1.0, best.reduced_chi2)
     scaled_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=scaled_delta)
-    write_period_summary(outdir / "period_summary.csv", best.period_hours, raw_uncertainty, scaled_uncertainty)
+    write_period_summary(outdir / "period_summary.csv", best.period_days, raw_uncertainty, scaled_uncertainty)
     produced_files.extend(
         [
             "folded_lightcurve.png",
@@ -217,7 +215,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 [
                     fit.order,
                     f"{fit.period_hours:.10f}",
-                    f"{fit.period_hours / 24.0:.10f}",
+                    f"{fit.period_days:.10f}",
                     f"{fit.chi2:.6f}",
                     f"{fit.reduced_chi2:.6f}",
                     f"{fit.aic:.6f}",
@@ -230,21 +228,21 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Mesures: {curve.n_points}")
     print(f"Baseline: {curve.baseline_days:.6f} jours")
     print()
-    if fixed_period_hours is None:
+    if fixed_period_days is None:
         print("=== GLS ===")
         print(f"Meilleure periode GLS: {format_period(gls_best_period)}")
-        if gls_best_period * 2.0 <= max_period_hours:
+        if gls_best_period * 2.0 <= args.max_period:
             print(f"Candidat double-pic 2 x GLS: {format_period(gls_best_period * 2.0)}")
         print(f"Puissance GLS: {float(np.max(gls)):.6f}")
         print("Note: pour un asteroide, GLS peut accrocher P/2 si la courbe est double-pic.")
         print()
     else:
         print("=== Periode imposee ===")
-        print(f"Periode: {format_period(fixed_period_hours)}")
+        print(f"Periode: {format_period(fixed_period_days)}")
         print("Recherche GLS/Fourier sautee; ajustement Fourier seulement a la periode imposee.")
         print()
     print("=== Fourier ===")
-    print(f"Meilleure periode: {format_period(best.period_hours)}")
+    print(f"Meilleure periode: {format_period(best.period_days)}")
     print(f"Ordre retenu: {best.order}")
     print(f"Chi2 reduit: {best.reduced_chi2:.6f}")
     print(f"AIC: {best.aic:.6f}")
@@ -253,13 +251,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     print("=== Incertitude sur P ===")
     print(
         "Profil chi2, delta chi2 = 1: "
-        f"-{format_uncertainty(raw_uncertainty.minus_hours)} / "
-        f"+{format_uncertainty(raw_uncertainty.plus_hours)}"
+        f"-{format_uncertainty(raw_uncertainty.minus_days)} / "
+        f"+{format_uncertainty(raw_uncertainty.plus_days)}"
     )
     print(
         f"Profil chi2 reechelonne, delta chi2 = {scaled_delta:.6f}: "
-        f"-{format_uncertainty(scaled_uncertainty.minus_hours)} / "
-        f"+{format_uncertainty(scaled_uncertainty.plus_hours)}"
+        f"-{format_uncertainty(scaled_uncertainty.minus_days)} / "
+        f"+{format_uncertainty(scaled_uncertainty.plus_days)}"
     )
     if scaled_delta > 1.0:
         print("Note: l'incertitude reechelonnee tient compte du chi2 reduit > 1.")

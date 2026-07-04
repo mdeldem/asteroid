@@ -18,13 +18,12 @@ def ensure_outdir(path: str | Path) -> Path:
     return outdir
 
 
-def phase(jd: np.ndarray, period_hours: float) -> np.ndarray:
-    period_days = period_hours / 24.0
+def phase(jd: np.ndarray, period_days: float) -> np.ndarray:
     return ((jd - np.min(jd)) / period_days) % 1.0
 
 
-def format_period(period_hours: float) -> str:
-    return f"{period_hours:.6f} h ({period_hours / 24.0:.8f} j)"
+def format_period(period_days: float) -> str:
+    return f"{period_days * 24.0:.6f} h ({period_days:.8f} j)"
 
 
 def jd_to_date_label(jd: float) -> str:
@@ -107,16 +106,16 @@ def add_file_legend(ax: plt.Axes, curve: LightCurve, uniform_style: bool = False
 
 
 def plot_periodogram(
-    periods_hours: np.ndarray,
+    periods_days: np.ndarray,
     score: np.ndarray,
     best_period: float,
     ylabel: str,
     path: str | Path,
 ) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(periods_hours, score, color="tab:blue", lw=1.1)
+    ax.plot(periods_days, score, color="tab:blue", lw=1.1)
     ax.axvline(best_period, color="tab:red", lw=1.0, ls="--", label=format_period(best_period))
-    ax.set_xlabel("Periode (h)")
+    ax.set_xlabel("Periode (j)")
     ax.set_ylabel(ylabel)
     ax.legend()
     ax.grid(alpha=0.25)
@@ -154,7 +153,7 @@ def plot_folded_lightcurve(
     path: str | Path,
     by_file: bool = False,
 ) -> None:
-    ph = phase(curve.jd, fit.period_hours)
+    ph = phase(curve.jd, fit.period_days)
     doubled_phase = np.concatenate([ph, ph + 1.0])
     mag = corrected_magnitudes(curve, fit)
     doubled_mag = np.concatenate([mag, mag])
@@ -201,7 +200,7 @@ def plot_folded_lightcurve(
     ax.set_xlabel("Phase")
     ax.set_ylabel("Magnitude corrigee")
     ax.set_title(
-        f"Courbe repliee - P = {format_period(fit.period_hours)}, ordre {fit.order}\n"
+        f"Courbe repliee - P = {format_period(fit.period_days)}, ordre {fit.order}\n"
         f"T0 = {format_t0(curve)} JD",
         fontsize=12,
     )
@@ -215,7 +214,7 @@ def plot_folded_lightcurve(
 
 
 def plot_residuals(curve: LightCurve, fit: FitResult, path: str | Path) -> None:
-    ph = phase(curve.jd, fit.period_hours)
+    ph = phase(curve.jd, fit.period_days)
     fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=False)
     axes[0].errorbar(curve.jd, fit.residuals, yerr=curve.mag_error, fmt=".", color="tab:purple")
     axes[0].axhline(0.0, color="0.2", lw=1.0)
