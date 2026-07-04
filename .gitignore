@@ -1,0 +1,25 @@
+# Donnees et resultats locaux
+data/
+output/
+output_v*/
+
+# Environnements Python
+.venv/
+venv/
+env/
+
+# Caches Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Sorties locales
+*.log
