@@ -26,6 +26,15 @@ def format_period(period_days: float) -> str:
     return f"{period_days * 24.0:.6f} h ({period_days:.8f} j)"
 
 
+def format_period_with_uncertainty(period_days: float, uncertainty_days: float | None) -> str:
+    if uncertainty_days is None:
+        return format_period(period_days)
+    return (
+        f"{period_days * 24.0:.6f} +/- {uncertainty_days * 24.0:.6f} h "
+        f"({period_days:.8f} +/- {uncertainty_days:.8f} j)"
+    )
+
+
 def jd_to_date_label(jd: float) -> str:
     unix_epoch_jd = 2440587.5
     dt = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(days=jd - unix_epoch_jd)
@@ -152,6 +161,7 @@ def plot_folded_lightcurve(
     fit: FitResult,
     path: str | Path,
     by_file: bool = False,
+    period_uncertainty_days: float | None = None,
 ) -> None:
     ph = phase(curve.jd, fit.period_days)
     doubled_phase = np.concatenate([ph, ph + 1.0])
@@ -200,7 +210,7 @@ def plot_folded_lightcurve(
     ax.set_xlabel("Phase")
     ax.set_ylabel("Magnitude corrigee")
     ax.set_title(
-        f"Courbe repliee - P = {format_period(fit.period_days)}, ordre {fit.order}\n"
+        f"Courbe repliee - P = {format_period_with_uncertainty(fit.period_days, period_uncertainty_days)}, ordre {fit.order}\n"
         f"T0 = {format_t0(curve)} JD",
         fontsize=12,
     )

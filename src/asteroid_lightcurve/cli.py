@@ -150,12 +150,23 @@ def cmd_search(args: argparse.Namespace) -> int:
             parse_orders(args.orders),
         )
 
-    plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve.png")
-    plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve_by_file.png", by_file=True)
-    plot_residuals(curve, best, outdir / "residuals.png")
     raw_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=1.0)
     scaled_delta = max(1.0, best.reduced_chi2)
     scaled_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=scaled_delta)
+    plot_folded_lightcurve(
+        curve,
+        best,
+        outdir / "folded_lightcurve.png",
+        period_uncertainty_days=scaled_uncertainty.symmetric_days,
+    )
+    plot_folded_lightcurve(
+        curve,
+        best,
+        outdir / "folded_lightcurve_by_file.png",
+        by_file=True,
+        period_uncertainty_days=scaled_uncertainty.symmetric_days,
+    )
+    plot_residuals(curve, best, outdir / "residuals.png")
     write_period_summary(outdir / "period_summary.csv", best.period_days, raw_uncertainty, scaled_uncertainty)
     produced_files.extend(
         [
