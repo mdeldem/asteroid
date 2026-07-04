@@ -16,6 +16,7 @@ from .plotting import (
     model_amplitude,
     per_file_scatter,
     format_period,
+    plot_folded_lightcurve_by_file_with_residuals,
     plot_folded_lightcurve,
     plot_periodogram,
     plot_residuals,
@@ -203,6 +204,12 @@ def cmd_search(args: argparse.Namespace) -> int:
         by_file=True,
         period_uncertainty_days=scaled_uncertainty.symmetric_days,
     )
+    plot_folded_lightcurve_by_file_with_residuals(
+        curve,
+        best,
+        outdir / "folded_lightcurve_by_file_with_residuals.png",
+        period_uncertainty_days=scaled_uncertainty.symmetric_days,
+    )
     plot_residuals(curve, best, outdir / "residuals.png")
     write_period_summary(outdir / "period_summary.csv", best.period_days, amplitude_mag, raw_uncertainty, scaled_uncertainty)
     write_file_summary(outdir / "file_summary.csv", curve, best)
@@ -210,6 +217,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         [
             "folded_lightcurve.png",
             "folded_lightcurve_by_file.png",
+            "folded_lightcurve_by_file_with_residuals.png",
             "residuals.png",
             "residuals.csv",
             "period_summary.csv",

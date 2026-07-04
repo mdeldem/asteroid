@@ -199,59 +199,12 @@ def folded_axis_limits(curve: LightCurve, fit: FitResult) -> tuple[tuple[float, 
     return (-0.1, 2.1), (y_max + padding, y_min - padding)
 
 
-def plot_folded_lightcurve(
+def add_folded_title(
+    ax: plt.Axes,
     curve: LightCurve,
     fit: FitResult,
-    path: str | Path,
-    by_file: bool = False,
-    period_uncertainty_days: float | None = None,
+    period_uncertainty_days: float | None,
 ) -> None:
-    ph = phase(curve.jd, fit.period_days)
-    doubled_phase = np.concatenate([ph, ph + 1.0])
-    mag = aligned_magnitudes(curve, fit)
-    doubled_mag = np.concatenate([mag, mag])
-    doubled_err = np.concatenate([curve.mag_error, curve.mag_error])
-
-    model_phase = np.linspace(0.0, 2.0, 600)
-    model = model_at_phase(curve, fit, model_phase)
-
-    fig, ax = plt.subplots(figsize=(13.5, 5.5))
-    if by_file:
-        colors, markers = file_plot_styles(len(curve.group_names))
-        labels = file_legend_labels(curve, fit)
-        for group_id, label in enumerate(labels):
-            mask = curve.group == group_id
-            group_phase = np.concatenate([ph[mask], ph[mask] + 1.0])
-            group_mag = np.concatenate([mag[mask], mag[mask]])
-            group_err = np.concatenate([curve.mag_error[mask], curve.mag_error[mask]])
-            ax.errorbar(
-                group_phase,
-                group_mag,
-                yerr=group_err,
-                fmt=markers[group_id % len(markers)],
-                color=colors[group_id % len(colors)],
-                ms=3.5,
-                alpha=0.42,
-                capsize=0,
-                elinewidth=0.45,
-                label=label,
-            )
-        add_file_legend(ax, curve, fit)
-    else:
-        ax.errorbar(
-            doubled_phase,
-            doubled_mag,
-            yerr=doubled_err,
-            fmt=".",
-            ms=4,
-            alpha=0.75,
-            ecolor="0.7",
-            color="tab:blue",
-        )
-        add_file_legend(ax, curve, fit, uniform_style=True)
-    ax.plot(model_phase, model, color="tab:red", lw=1.5)
-    ax.set_xlabel("Phase")
-    ax.set_ylabel("Magnitude alignee")
     ax.text(
         0.0,
         1.145,
@@ -279,11 +232,124 @@ def plot_folded_lightcurve(
         va="bottom",
         fontsize=11,
     )
+
+
+def plot_file_groups(
+    ax: plt.Axes,
+    curve: LightCurve,
+    y_values: np.ndarray,
+    y_errors: np.ndarray,
+    fit: FitResult,
+    alpha: float = 0.42,
+) -> None:
+    ph = phase(curve.jd, fit.period_days)
+    colors, markers = file_plot_styles(len(curve.group_names))
+    labels = file_legend_labels(curve, fit)
+    for group_id, label in enumerate(labels):
+        mask = curve.group == group_id
+        group_phase = np.concatenate([ph[mask], ph[mask] + 1.0])
+        group_y = np.concatenate([y_values[mask], y_values[mask]])
+        group_err = np.concatenate([y_errors[mask], y_errors[mask]])
+        ax.errorbar(
+            group_phase,
+            group_y,
+            yerr=group_err,
+            fmt=markers[group_id % len(markers)],
+            color=colors[group_id % len(colors)],
+            ms=3.5,
+            alpha=alpha,
+            capsize=0,
+            elinewidth=0.45,
+            label=label,
+        )
+
+
+def plot_folded_lightcurve(
+    curve: LightCurve,
+    fit: FitResult,
+    path: str | Path,
+    by_file: bool = False,
+    period_uncertainty_days: float | None = None,
+) -> None:
+    ph = phase(curve.jd, fit.period_days)
+    doubled_phase = np.concatenate([ph, ph + 1.0])
+    mag = aligned_magnitudes(curve, fit)
+    doubled_mag = np.concatenate([mag, mag])
+    doubled_err = np.concatenate([curve.mag_error, curve.mag_error])
+
+    model_phase = np.linspace(0.0, 2.0, 600)
+    model = model_at_phase(curve, fit, model_phase)
+
+    fig, ax = plt.subplots(figsize=(13.5, 5.5))
+    if by_file:
+        plot_file_groups(ax, curve, mag, curve.mag_error, fit)
+        add_file_legend(ax, curve, fit)
+    else:
+        ax.errorbar(
+            doubled_phase,
+            doubled_mag,
+            yerr=doubled_err,
+            fmt=".",
+            ms=4,
+            alpha=0.75,
+            ecolor="0.7",
+            color="tab:blue",
+        )
+        add_file_legend(ax, curve, fit, uniform_style=True)
+    ax.plot(model_phase, model, color="tab:red", lw=1.5)
+    ax.set_xlabel("Phase")
+    ax.set_ylabel("Magnitude alignee")
+    add_folded_title(ax, curve, fit, period_uncertainty_days)
     xlim, ylim = folded_axis_limits(curve, fit)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.grid(alpha=0.25)
     fig.tight_layout(rect=(0.0, 0.0, 0.88, 0.88))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_folded_lightcurve_by_file_with_residuals(
+    curve: LightCurve,
+    fit: FitResult,
+    path: str | Path,
+    period_uncertainty_days: float | None = None,
+) -> None:
+    mag = aligned_magnitudes(curve, fit)
+    residuals = mag - aligned_model(curve, fit)
+    model_phase = np.linspace(0.0, 2.0, 600)
+    model = model_at_phase(curve, fit, model_phase)
+
+    fig, (ax_lc, ax_res) = plt.subplots(
+        2,
+        1,
+        figsize=(13.5, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3.0, 1.15], "hspace": 0.08},
+    )
+
+    plot_file_groups(ax_lc, curve, mag, curve.mag_error, fit)
+    ax_lc.plot(model_phase, model, color="tab:red", lw=1.5)
+    add_file_legend(ax_lc, curve, fit)
+    add_folded_title(ax_lc, curve, fit, period_uncertainty_days)
+    xlim, ylim = folded_axis_limits(curve, fit)
+    ax_lc.set_xlim(*xlim)
+    ax_lc.set_ylim(*ylim)
+    ax_lc.set_ylabel("Magnitude alignee")
+    ax_lc.grid(alpha=0.25)
+    ax_lc.tick_params(labelbottom=False)
+
+    plot_file_groups(ax_res, curve, residuals, curve.mag_error, fit, alpha=0.55)
+    ax_res.axhline(0.0, color="0.2", lw=1.0)
+    y_values = np.concatenate([residuals - curve.mag_error, residuals + curve.mag_error])
+    max_abs = max(float(np.nanmax(np.abs(y_values))), 0.01)
+    ax_res.set_ylim(-max_abs * 1.15, max_abs * 1.15)
+    ax_res.set_xlim(*xlim)
+    ax_res.set_xlabel("Phase")
+    ax_res.set_ylabel("Residus (mag)")
+    ax_res.grid(alpha=0.25)
+
+    fig.subplots_adjust(left=0.08, right=0.78, bottom=0.09, top=0.82, hspace=0.08)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
