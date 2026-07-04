@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from .ephemeris import FileEphemeris, HjdCorrection, apply_hjd_correction, fetch_file_ephemerides
+from .models import LightCurve, subset_lightcurve
 from .parser import expand_inputs, read_lightcurve
 from .period import (
     CandidateFit,
@@ -29,8 +31,19 @@ from .plotting import (
     plot_folded_lightcurve_by_file_with_residuals,
     plot_folded_lightcurve,
     plot_periodogram,
+    plot_residual_filter,
     plot_residuals,
 )
+
+
+@dataclass
+class ResidualFilter:
+    keep_mask: np.ndarray
+    reject_mask: np.ndarray
+    residual_center: float
+    residual_scale: float
+    threshold_mag: float
+    requested_threshold_mag: float
 
 
 def parse_orders(value: str) -> range:
@@ -185,6 +198,241 @@ def write_candidate_summary(path: Path, candidate_fits: list[CandidateFit]) -> N
             )
 
 
+def write_order_summary(path: Path, order_bests) -> None:
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(["order", "period_days", "period_hours", "chi2", "reduced_chi2", "aic", "bic"])
+        for fit in order_bests:
+            writer.writerow(
+                [
+                    fit.order,
+                    f"{fit.period_days:.10f}",
+                    f"{fit.period_hours:.10f}",
+                    f"{fit.chi2:.6f}",
+                    f"{fit.reduced_chi2:.6f}",
+                    f"{fit.aic:.6f}",
+                    f"{fit.bic:.6f}",
+                ]
+            )
+
+
+def residual_filter_from_fit(
+    fit,
+    sigma: float,
+    threshold_mag: float | None,
+    max_reject_fraction: float,
+    min_points: int,
+) -> ResidualFilter:
+    if sigma <= 0:
+        raise ValueError("--binary-filter-sigma doit etre strictement positif")
+    if threshold_mag is not None and threshold_mag <= 0:
+        raise ValueError("--binary-filter-threshold-mag doit etre strictement positif")
+    if not 0.0 < max_reject_fraction < 1.0:
+        raise ValueError("--binary-filter-max-reject-fraction doit etre dans ]0,1[")
+
+    residuals = np.asarray(fit.residuals, dtype=float)
+    center = float(np.nanmedian(residuals))
+    abs_deviation = np.abs(residuals - center)
+    mad = float(np.nanmedian(abs_deviation))
+    scale = 1.4826 * mad
+    if not np.isfinite(scale) or scale <= 0:
+        scale = float(np.nanstd(residuals, ddof=1)) if residuals.size >= 2 else 0.0
+    if not np.isfinite(scale) or scale <= 0:
+        scale = 1e-12
+
+    requested_threshold = float(threshold_mag) if threshold_mag is not None else sigma * scale
+    reject_mask = abs_deviation > requested_threshold
+    max_reject = int(np.floor(residuals.size * max_reject_fraction))
+    if max_reject <= 0:
+        reject_mask = np.zeros(residuals.size, dtype=bool)
+    elif int(np.sum(reject_mask)) > max_reject:
+        reject_mask = np.zeros(residuals.size, dtype=bool)
+        rejected_indices = np.argsort(abs_deviation)[-max_reject:]
+        reject_mask[rejected_indices] = True
+
+    keep_mask = ~reject_mask
+    if int(np.sum(keep_mask)) < min_points:
+        raise RuntimeError(
+            f"Filtrage binaire abandonne: {int(np.sum(keep_mask))} points conserves, "
+            f"minimum requis {min_points}"
+        )
+
+    effective_threshold = float(np.min(abs_deviation[reject_mask])) if np.any(reject_mask) else requested_threshold
+    return ResidualFilter(
+        keep_mask=keep_mask,
+        reject_mask=reject_mask,
+        residual_center=center,
+        residual_scale=float(scale),
+        threshold_mag=effective_threshold,
+        requested_threshold_mag=requested_threshold,
+    )
+
+
+def write_binary_filter_summary(path: Path, curve: LightCurve, result: ResidualFilter, sigma: float) -> None:
+    rejected = int(np.sum(result.reject_mask))
+    kept = int(np.sum(result.keep_mask))
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "n_points_initial",
+                "n_points_kept",
+                "n_points_rejected",
+                "rejected_fraction",
+                "sigma_threshold",
+                "residual_center_mag",
+                "robust_residual_sigma_mag",
+                "requested_threshold_mag",
+                "effective_threshold_mag",
+            ]
+        )
+        writer.writerow(
+            [
+                curve.n_points,
+                kept,
+                rejected,
+                f"{rejected / curve.n_points:.6f}",
+                f"{sigma:.6f}",
+                f"{result.residual_center:.6f}",
+                f"{result.residual_scale:.6f}",
+                f"{result.requested_threshold_mag:.6f}",
+                f"{result.threshold_mag:.6f}",
+            ]
+        )
+
+
+def write_residual_table(
+    path: Path,
+    curve: LightCurve,
+    fit,
+    hjd_correction: HjdCorrection | None,
+    source_mask: np.ndarray | None = None,
+) -> None:
+    aligned_mag = aligned_magnitudes(curve, fit)
+    aligned_fit = aligned_model(curve, fit)
+    if source_mask is None:
+        if hjd_correction is None:
+            jd_utc_values = curve.jd
+            hjd_utc_values = curve.jd
+            correction_values = np.zeros_like(curve.jd)
+        else:
+            jd_utc_values = hjd_correction.jd_utc
+            hjd_utc_values = hjd_correction.hjd_utc
+            correction_values = hjd_correction.correction_days
+    else:
+        if hjd_correction is None:
+            jd_utc_values = curve.jd
+            hjd_utc_values = curve.jd
+            correction_values = np.zeros_like(curve.jd)
+        else:
+            jd_utc_values = hjd_correction.jd_utc[source_mask]
+            hjd_utc_values = hjd_correction.hjd_utc[source_mask]
+            correction_values = hjd_correction.correction_days[source_mask]
+
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "jd_utc",
+                "hjd_utc",
+                "hjd_correction_days",
+                "hjd_correction_seconds",
+                "magnitude",
+                "aligned_magnitude",
+                "mag_error",
+                "raw_model",
+                "aligned_model",
+                "residual",
+                "file",
+            ]
+        )
+        for jd_utc, hjd_utc, correction_days, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
+            jd_utc_values,
+            hjd_utc_values,
+            correction_values,
+            curve.magnitude,
+            aligned_mag,
+            curve.mag_error,
+            fit.model,
+            aligned_fit,
+            fit.residuals,
+            curve.group,
+        ):
+            writer.writerow(
+                [
+                    f"{jd_utc:.8f}",
+                    f"{hjd_utc:.8f}",
+                    f"{correction_days:.10f}",
+                    f"{correction_days * 86400.0:.6f}",
+                    f"{mag:.6f}",
+                    f"{aligned_mag_value:.6f}",
+                    f"{err:.6f}",
+                    f"{raw_model:.6f}",
+                    f"{aligned_model_value:.6f}",
+                    f"{residual:.6f}",
+                    curve.group_names[int(group)],
+                ]
+            )
+
+
+def run_period_search(
+    curve: LightCurve,
+    args: argparse.Namespace,
+    outdir: Path,
+    prefix: str = "",
+) -> tuple:
+    if args.min_period is None or args.max_period is None:
+        raise SystemExit("--min-period et --max-period sont requis sans --period")
+    periods = period_grid(args.min_period, args.max_period, args.samples)
+
+    gls = gls_power(curve, periods)
+    gls_best_period = float(periods[int(np.argmax(gls))])
+    plot_periodogram(
+        periods,
+        gls,
+        gls_best_period,
+        "Puissance GLS",
+        outdir / f"{prefix}gls_periodogram.png",
+    )
+
+    best, candidate_fits, gls_candidates = search_period_order_candidates(
+        curve,
+        periods,
+        gls,
+        parse_orders(args.orders),
+        top_n=args.gls_candidates,
+        multipliers=args.gls_multipliers,
+        refine_width=args.refine_width,
+        refine_samples=args.candidate_refine_samples,
+    )
+    best = refine_period(
+        curve,
+        best.period_days,
+        best.order,
+        width_fraction=args.refine_width,
+        samples=args.refine_samples,
+        min_period_days=args.min_period,
+        max_period_days=args.max_period,
+    )
+    order_bests = []
+    for order in parse_orders(args.orders):
+        fits_for_order = [candidate_fit.fit for candidate_fit in candidate_fits if candidate_fit.fit.order == order]
+        if fits_for_order:
+            order_bests.append(min(fits_for_order, key=lambda fit: fit.bic))
+
+    bic_score = np.full_like(periods, np.nan, dtype=float)
+    for idx, period in enumerate(periods):
+        bic_score[idx] = -search_fourier(curve, np.asarray([period]), range(best.order, best.order + 1))[0].bic
+    plot_periodogram(
+        periods,
+        bic_score,
+        best.period_days,
+        f"Score Fourier ordre {best.order} (-BIC)",
+        outdir / f"{prefix}fourier_period_search.png",
+    )
+    return best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls
+
+
 def write_ephemeris_by_file(
     path: Path,
     curve,
@@ -256,6 +504,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     produced_files: list[str] = []
     ephemerides: list[FileEphemeris] = []
     hjd_correction: HjdCorrection | None = None
+    if args.binary_filter and fixed_period_days is not None:
+        raise SystemExit("--binary-filter necessite une recherche de periode, pas --period")
 
     if not args.no_ephemeris:
         print("Recuperation des positions RA/DEC par fichier via JPL Horizons...")
@@ -263,57 +513,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         hjd_correction = apply_hjd_correction(curve, ephemerides)
 
     if fixed_period_days is None:
-        if args.min_period is None or args.max_period is None:
-            raise SystemExit("--min-period et --max-period sont requis sans --period")
-        periods = period_grid(args.min_period, args.max_period, args.samples)
-
-        gls = gls_power(curve, periods)
-        gls_best_period = float(periods[int(np.argmax(gls))])
-        plot_periodogram(
-            periods,
-            gls,
-            gls_best_period,
-            "Puissance GLS",
-            outdir / "gls_periodogram.png",
-        )
-        produced_files.append("gls_periodogram.png")
-
-        best, candidate_fits, gls_candidates = search_period_order_candidates(
-            curve,
-            periods,
-            gls,
-            parse_orders(args.orders),
-            top_n=args.gls_candidates,
-            multipliers=args.gls_multipliers,
-            refine_width=args.refine_width,
-            refine_samples=args.candidate_refine_samples,
-        )
-        best = refine_period(
-            curve,
-            best.period_days,
-            best.order,
-            width_fraction=args.refine_width,
-            samples=args.refine_samples,
-            min_period_days=args.min_period,
-            max_period_days=args.max_period,
-        )
-        order_bests = []
-        for order in parse_orders(args.orders):
-            fits_for_order = [candidate_fit.fit for candidate_fit in candidate_fits if candidate_fit.fit.order == order]
-            if fits_for_order:
-                order_bests.append(min(fits_for_order, key=lambda fit: fit.bic))
-
-        bic_score = np.full_like(periods, np.nan, dtype=float)
-        for idx, period in enumerate(periods):
-            bic_score[idx] = -search_fourier(curve, np.asarray([period]), range(best.order, best.order + 1))[0].bic
-        plot_periodogram(
-            periods,
-            bic_score,
-            best.period_days,
-            f"Score Fourier ordre {best.order} (-BIC)",
-            outdir / "fourier_period_search.png",
-        )
-        produced_files.append("fourier_period_search.png")
+        best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls = run_period_search(curve, args, outdir)
+        produced_files.extend(["gls_periodogram.png", "fourier_period_search.png"])
     else:
         if fixed_period_days <= 0:
             raise SystemExit("--period doit etre strictement positif")
@@ -371,75 +572,106 @@ def cmd_search(args: argparse.Namespace) -> int:
         produced_files.append("period_order_candidates.csv")
     if ephemerides:
         produced_files.append("ephemeris_by_file.csv")
-    residual_path = outdir / "residuals.csv"
-    aligned_mag = aligned_magnitudes(curve, best)
-    aligned_fit = aligned_model(curve, best)
-    with residual_path.open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.writer(handle, delimiter=";")
-        writer.writerow(
-            [
-                "jd_utc",
-                "hjd_utc",
-                "hjd_correction_days",
-                "hjd_correction_seconds",
-                "magnitude",
-                "aligned_magnitude",
-                "mag_error",
-                "raw_model",
-                "aligned_model",
-                "residual",
-                "file",
-            ]
-        )
-        if hjd_correction is None:
-            jd_utc_values = curve.jd
-            hjd_utc_values = curve.jd
-            correction_values = np.zeros_like(curve.jd)
-        else:
-            jd_utc_values = hjd_correction.jd_utc
-            hjd_utc_values = hjd_correction.hjd_utc
-            correction_values = hjd_correction.correction_days
-        for jd_utc, hjd_utc, correction_days, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
-            jd_utc_values,
-            hjd_utc_values,
-            correction_values,
-            curve.magnitude,
-            aligned_mag,
-            curve.mag_error,
-            best.model,
-            aligned_fit,
-            best.residuals,
-            curve.group,
-        ):
-            writer.writerow(
-                [
-                    f"{jd_utc:.8f}",
-                    f"{hjd_utc:.8f}",
-                    f"{correction_days:.10f}",
-                    f"{correction_days * 86400.0:.6f}",
-                    f"{mag:.6f}",
-                    f"{aligned_mag_value:.6f}",
-                    f"{err:.6f}",
-                    f"{raw_model:.6f}",
-                    f"{aligned_model_value:.6f}",
-                    f"{residual:.6f}",
-                    curve.group_names[int(group)],
-                ]
-            )
+    write_residual_table(outdir / "residuals.csv", curve, best, hjd_correction)
 
-    with (outdir / "fourier_order_summary.csv").open("w", newline="", encoding="utf-8-sig") as handle:
-        writer = csv.writer(handle, delimiter=";")
-        writer.writerow(["order", "period_days", "period_hours", "chi2", "reduced_chi2", "aic", "bic"])
-        for fit in order_bests:
-            writer.writerow(
+    write_order_summary(outdir / "fourier_order_summary.csv", order_bests)
+
+    binary_filter_result: ResidualFilter | None = None
+    binary_best = None
+    binary_amplitude_mag: float | None = None
+    if args.binary_filter:
+        binary_filter_result = residual_filter_from_fit(
+            best,
+            sigma=args.binary_filter_sigma,
+            threshold_mag=args.binary_filter_threshold_mag,
+            max_reject_fraction=args.binary_filter_max_reject_fraction,
+            min_points=args.binary_filter_min_points,
+        )
+        write_binary_filter_summary(
+            outdir / "binary_filter_summary.csv",
+            curve,
+            binary_filter_result,
+            args.binary_filter_sigma,
+        )
+        plot_residual_filter(
+            curve,
+            best,
+            binary_filter_result.reject_mask,
+            binary_filter_result.residual_center,
+            binary_filter_result.threshold_mag,
+            outdir / "binary_filter_rejected_points.png",
+        )
+        produced_files.append("binary_filter_summary.csv")
+        produced_files.append("binary_filter_rejected_points.png")
+
+        if np.any(binary_filter_result.reject_mask):
+            filtered_curve = subset_lightcurve(curve, binary_filter_result.keep_mask)
+            (
+                binary_best,
+                binary_order_bests,
+                binary_candidate_fits,
+                _binary_gls_candidates,
+                _binary_gls_best_period,
+                _binary_gls,
+            ) = run_period_search(filtered_curve, args, outdir, prefix="binary_filtered_")
+            binary_raw_uncertainty = estimate_period_uncertainty(filtered_curve, binary_best, delta_chi2=1.0)
+            binary_scaled_delta = max(1.0, binary_best.reduced_chi2)
+            binary_scaled_uncertainty = estimate_period_uncertainty(
+                filtered_curve,
+                binary_best,
+                delta_chi2=binary_scaled_delta,
+            )
+            binary_amplitude_mag = model_amplitude(binary_best)
+            plot_folded_lightcurve(
+                filtered_curve,
+                binary_best,
+                outdir / "binary_filtered_folded_lightcurve.png",
+                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+            )
+            plot_folded_lightcurve(
+                filtered_curve,
+                binary_best,
+                outdir / "binary_filtered_folded_lightcurve_by_file.png",
+                by_file=True,
+                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+            )
+            plot_folded_lightcurve_by_file_with_residuals(
+                filtered_curve,
+                binary_best,
+                outdir / "binary_filtered_folded_lightcurve_by_file_with_residuals.png",
+                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+            )
+            plot_residuals(filtered_curve, binary_best, outdir / "binary_filtered_residuals.png")
+            write_period_summary(
+                outdir / "binary_filtered_period_summary.csv",
+                binary_best.period_days,
+                binary_amplitude_mag,
+                binary_raw_uncertainty,
+                binary_scaled_uncertainty,
+            )
+            write_file_summary(outdir / "binary_filtered_file_summary.csv", filtered_curve, binary_best)
+            write_candidate_summary(outdir / "binary_filtered_period_order_candidates.csv", binary_candidate_fits)
+            write_order_summary(outdir / "binary_filtered_fourier_order_summary.csv", binary_order_bests)
+            write_residual_table(
+                outdir / "binary_filtered_residuals.csv",
+                filtered_curve,
+                binary_best,
+                hjd_correction,
+                source_mask=binary_filter_result.keep_mask,
+            )
+            produced_files.extend(
                 [
-                    fit.order,
-                    f"{fit.period_days:.10f}",
-                    f"{fit.period_hours:.10f}",
-                    f"{fit.chi2:.6f}",
-                    f"{fit.reduced_chi2:.6f}",
-                    f"{fit.aic:.6f}",
-                    f"{fit.bic:.6f}",
+                    "binary_filtered_gls_periodogram.png",
+                    "binary_filtered_fourier_period_search.png",
+                    "binary_filtered_folded_lightcurve.png",
+                    "binary_filtered_folded_lightcurve_by_file.png",
+                    "binary_filtered_folded_lightcurve_by_file_with_residuals.png",
+                    "binary_filtered_residuals.png",
+                    "binary_filtered_residuals.csv",
+                    "binary_filtered_period_summary.csv",
+                    "binary_filtered_file_summary.csv",
+                    "binary_filtered_period_order_candidates.csv",
+                    "binary_filtered_fourier_order_summary.csv",
                 ]
             )
 
@@ -486,6 +718,26 @@ def cmd_search(args: argparse.Namespace) -> int:
     if scaled_delta > 1.0:
         print("Note: l'incertitude reechelonnee tient compte du chi2 reduit > 1.")
     print()
+    if binary_filter_result is not None:
+        print("=== Filtrage binaire ===")
+        print(
+            f"Points rejetes: {int(np.sum(binary_filter_result.reject_mask))} / "
+            f"{binary_filter_result.reject_mask.size}"
+        )
+        print(
+            "Seuil residu: "
+            f"{binary_filter_result.threshold_mag:.6f} mag "
+            f"({args.binary_filter_sigma:.2f} sigma robustes)"
+        )
+        if binary_best is None:
+            print("Aucune nouvelle recherche lancee: aucun point rejete.")
+        else:
+            print(f"Periode filtree: {format_period(binary_best.period_days)}")
+            print(f"Ordre filtre: {binary_best.order}")
+            if binary_amplitude_mag is not None:
+                print(f"Amplitude filtree: {binary_amplitude_mag:.3f} mag")
+            print(f"BIC filtre: {binary_best.bic:.6f}")
+        print()
     print("=== Fichiers produits ===")
     for name in produced_files:
         print(outdir / name)
@@ -527,6 +779,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Echantillons de raffinement par couple candidat periode/ordre",
     )
     search_parser.add_argument("--refine-samples", type=int, default=2000, help="Echantillons du raffinement")
+    search_parser.add_argument(
+        "--binary-filter",
+        action="store_true",
+        help="Apres la recherche initiale, rejeter les forts residus et relancer une recherche de periode",
+    )
+    search_parser.add_argument(
+        "--binary-filter-sigma",
+        type=float,
+        default=3.5,
+        help="Seuil robuste en sigma MAD pour rejeter les residus",
+    )
+    search_parser.add_argument(
+        "--binary-filter-threshold-mag",
+        type=float,
+        help="Seuil absolu de residu en magnitude; remplace le seuil sigma",
+    )
+    search_parser.add_argument(
+        "--binary-filter-max-reject-fraction",
+        type=float,
+        default=0.25,
+        help="Fraction maximale de points rejetes par le filtrage binaire",
+    )
+    search_parser.add_argument(
+        "--binary-filter-min-points",
+        type=int,
+        default=30,
+        help="Nombre minimal de points a conserver apres filtrage binaire",
+    )
     search_parser.add_argument("--keep-start-time", action="store_true", help="Ne pas convertir vers le milieu de pose")
     search_parser.add_argument(
         "--no-ephemeris",

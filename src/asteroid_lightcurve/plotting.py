@@ -4,6 +4,9 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
@@ -368,6 +371,60 @@ def plot_residuals(curve: LightCurve, fit: FitResult, path: str | Path) -> None:
     axes[1].set_xlabel("Phase")
     axes[1].set_ylabel("Residus (mag)")
     axes[1].grid(alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def plot_residual_filter(
+    curve: LightCurve,
+    fit: FitResult,
+    reject_mask: np.ndarray,
+    residual_center: float,
+    threshold_mag: float,
+    path: str | Path,
+) -> None:
+    ph = phase(curve.jd, fit.period_days)
+    keep_mask = ~reject_mask
+    upper = residual_center + threshold_mag
+    lower = residual_center - threshold_mag
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=False)
+    for ax, x_values, xlabel in [
+        (axes[0], curve.jd, curve.time_label),
+        (axes[1], ph, "Phase"),
+    ]:
+        ax.errorbar(
+            x_values[keep_mask],
+            fit.residuals[keep_mask],
+            yerr=curve.mag_error[keep_mask],
+            fmt=".",
+            color="0.45",
+            ecolor="0.78",
+            ms=4,
+            alpha=0.75,
+            label="Conserve",
+        )
+        if np.any(reject_mask):
+            ax.errorbar(
+                x_values[reject_mask],
+                fit.residuals[reject_mask],
+                yerr=curve.mag_error[reject_mask],
+                fmt="o",
+                color="tab:red",
+                ecolor="tab:red",
+                ms=4,
+                alpha=0.85,
+                label="Rejete",
+            )
+        ax.axhline(residual_center, color="0.2", lw=1.0)
+        ax.axhline(upper, color="tab:red", lw=1.0, ls="--")
+        ax.axhline(lower, color="tab:red", lw=1.0, ls="--")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Residus (mag)")
+        ax.grid(alpha=0.25)
+        ax.legend()
 
     fig.tight_layout()
     fig.savefig(path, dpi=160)

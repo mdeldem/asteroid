@@ -86,3 +86,28 @@ class LightCurve:
         if self.jd.size < 2:
             return 0.0
         return float(np.max(self.jd) - np.min(self.jd))
+
+
+def subset_lightcurve(curve: LightCurve, mask: np.ndarray) -> LightCurve:
+    keep = np.asarray(mask, dtype=bool)
+    if keep.size != curve.jd.size:
+        raise ValueError("Le masque doit avoir la meme taille que la courbe")
+    if not np.any(keep):
+        raise ValueError("Le masque rejette toutes les mesures")
+
+    used_groups = sorted(int(group_id) for group_id in np.unique(curve.group[keep]))
+    group_map = {old_group: new_group for new_group, old_group in enumerate(used_groups)}
+    compact_group = np.array([group_map[int(group_id)] for group_id in curve.group[keep]], dtype=int)
+
+    files = [curve.files[group_id] for group_id in used_groups] if curve.files else []
+
+    return LightCurve(
+        jd=curve.jd[keep],
+        jd_decimals=curve.jd_decimals[keep],
+        magnitude=curve.magnitude[keep],
+        mag_error=curve.mag_error[keep],
+        group=compact_group,
+        group_names=[curve.group_names[group_id] for group_id in used_groups],
+        files=files,
+        time_label=curve.time_label,
+    )
