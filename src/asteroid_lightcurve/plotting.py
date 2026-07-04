@@ -6,6 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from .models import LightCurve
 from .period import FitResult
@@ -63,6 +64,38 @@ def file_date_labels(curve: LightCurve) -> list[str]:
     return labels
 
 
+def file_plot_styles(count: int) -> tuple[list[str], list[str]]:
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["tab:blue"])
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "8"]
+    return colors, markers[:count]
+
+
+def add_file_legend(ax: plt.Axes, curve: LightCurve, uniform_style: bool = False) -> None:
+    colors, markers = file_plot_styles(len(curve.group_names))
+    labels = file_date_labels(curve)
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="." if uniform_style else markers[group_id % len(markers)],
+            color="tab:blue" if uniform_style else colors[group_id % len(colors)],
+            linestyle="None",
+            markersize=7 if uniform_style else 5,
+            alpha=0.75 if uniform_style else 0.7,
+        )
+        for group_id in range(len(labels))
+    ]
+    ax.legend(
+        handles,
+        labels,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        fontsize="small",
+        frameon=True,
+        borderaxespad=0.0,
+    )
+
+
 def plot_periodogram(
     periods_hours: np.ndarray,
     score: np.ndarray,
@@ -94,6 +127,17 @@ def model_at_phase(curve: LightCurve, fit: FitResult, model_phase: np.ndarray) -
     return model
 
 
+def folded_axis_limits(curve: LightCurve, fit: FitResult) -> tuple[tuple[float, float], tuple[float, float]]:
+    mag = corrected_magnitudes(curve, fit)
+    model_phase = np.linspace(0.0, 2.0, 600)
+    model = model_at_phase(curve, fit, model_phase)
+    y_values = np.concatenate([mag - curve.mag_error, mag + curve.mag_error, model])
+    y_min = float(np.nanmin(y_values))
+    y_max = float(np.nanmax(y_values))
+    padding = max((y_max - y_min) * 0.05, 0.01)
+    return (-0.1, 2.1), (y_max + padding, y_min - padding)
+
+
 def plot_folded_lightcurve(
     curve: LightCurve,
     fit: FitResult,
@@ -109,10 +153,9 @@ def plot_folded_lightcurve(
     model_phase = np.linspace(0.0, 2.0, 600)
     model = model_at_phase(curve, fit, model_phase)
 
-    figsize = (12, 5) if by_file else (9, 5)
-    fig, ax = plt.subplots(figsize=figsize)
+    fig, ax = plt.subplots(figsize=(12, 5))
     if by_file:
-        markers = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">", "h", "8"]
+        colors, markers = file_plot_styles(len(curve.group_names))
         labels = file_date_labels(curve)
         for group_id, label in enumerate(labels):
             mask = curve.group == group_id
@@ -124,19 +167,14 @@ def plot_folded_lightcurve(
                 group_mag,
                 yerr=group_err,
                 fmt=markers[group_id % len(markers)],
+                color=colors[group_id % len(colors)],
                 ms=3.5,
                 alpha=0.42,
                 capsize=0,
                 elinewidth=0.45,
                 label=label,
             )
-        ax.legend(
-            loc="center left",
-            bbox_to_anchor=(1.01, 0.5),
-            fontsize="small",
-            frameon=True,
-            borderaxespad=0.0,
-        )
+        add_file_legend(ax, curve)
     else:
         ax.errorbar(
             doubled_phase,
@@ -148,16 +186,20 @@ def plot_folded_lightcurve(
             ecolor="0.7",
             color="tab:blue",
         )
+        add_file_legend(ax, curve, uniform_style=True)
     ax.plot(model_phase, model, color="tab:red", lw=1.5)
     ax.set_xlabel("Phase")
     ax.set_ylabel("Magnitude corrigee")
-    ax.set_title(f"Courbe repliee - P = {fit.period_hours:.6f} h, ordre {fit.order}")
-    ax.invert_yaxis()
+    ax.set_title(
+        f"Courbe repliee - P = {fit.period_hours:.6f} h, ordre {fit.order}\n"
+        f"T0 = {float(np.min(curve.jd)):.8f} JD",
+        fontsize=12,
+    )
+    xlim, ylim = folded_axis_limits(curve, fit)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
     ax.grid(alpha=0.25)
-    if by_file:
-        fig.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
-    else:
-        fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
     fig.savefig(path, dpi=160)
     plt.close(fig)
 
