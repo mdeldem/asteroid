@@ -9,8 +9,8 @@ import numpy as np
 from .parser import expand_inputs, read_lightcurve
 from .period import PeriodUncertainty, estimate_period_uncertainty, gls_power, period_grid, refine_period, search_fourier
 from .plotting import (
-    corrected_magnitudes,
-    corrected_model,
+    aligned_magnitudes,
+    aligned_model,
     ensure_outdir,
     format_period,
     plot_folded_lightcurve,
@@ -179,29 +179,29 @@ def cmd_search(args: argparse.Namespace) -> int:
         ]
     )
     residual_path = outdir / "residuals.csv"
-    corrected_mag = corrected_magnitudes(curve, best)
-    corrected_fit = corrected_model(curve, best)
+    aligned_mag = aligned_magnitudes(curve, best)
+    aligned_fit = aligned_model(curve, best)
     with residual_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
             [
                 "jd",
                 "magnitude",
-                "corrected_magnitude",
+                "aligned_magnitude",
                 "mag_error",
-                "model",
-                "corrected_model",
+                "raw_model",
+                "aligned_model",
                 "residual",
                 "file",
             ]
         )
-        for jd, mag, corr_mag, err, model, corr_model, residual, group in zip(
+        for jd, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
             curve.jd,
             curve.magnitude,
-            corrected_mag,
+            aligned_mag,
             curve.mag_error,
             best.model,
-            corrected_fit,
+            aligned_fit,
             best.residuals,
             curve.group,
         ):
@@ -209,10 +209,10 @@ def cmd_search(args: argparse.Namespace) -> int:
                 [
                     f"{jd:.8f}",
                     f"{mag:.6f}",
-                    f"{corr_mag:.6f}",
+                    f"{aligned_mag_value:.6f}",
                     f"{err:.6f}",
-                    f"{model:.6f}",
-                    f"{corr_model:.6f}",
+                    f"{raw_model:.6f}",
+                    f"{aligned_model_value:.6f}",
                     f"{residual:.6f}",
                     curve.group_names[int(group)],
                 ]

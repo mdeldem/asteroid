@@ -54,12 +54,12 @@ def group_offsets(curve: LightCurve, fit: FitResult) -> np.ndarray:
     return offsets
 
 
-def corrected_magnitudes(curve: LightCurve, fit: FitResult) -> np.ndarray:
+def aligned_magnitudes(curve: LightCurve, fit: FitResult) -> np.ndarray:
     offsets = group_offsets(curve, fit)
     return curve.magnitude - offsets[curve.group]
 
 
-def corrected_model(curve: LightCurve, fit: FitResult) -> np.ndarray:
+def aligned_model(curve: LightCurve, fit: FitResult) -> np.ndarray:
     offsets = group_offsets(curve, fit)
     return fit.model - offsets[curve.group]
 
@@ -146,7 +146,7 @@ def model_at_phase(curve: LightCurve, fit: FitResult, model_phase: np.ndarray) -
 
 
 def folded_axis_limits(curve: LightCurve, fit: FitResult) -> tuple[tuple[float, float], tuple[float, float]]:
-    mag = corrected_magnitudes(curve, fit)
+    mag = aligned_magnitudes(curve, fit)
     model_phase = np.linspace(0.0, 2.0, 600)
     model = model_at_phase(curve, fit, model_phase)
     y_values = np.concatenate([mag - curve.mag_error, mag + curve.mag_error, model])
@@ -165,7 +165,7 @@ def plot_folded_lightcurve(
 ) -> None:
     ph = phase(curve.jd, fit.period_days)
     doubled_phase = np.concatenate([ph, ph + 1.0])
-    mag = corrected_magnitudes(curve, fit)
+    mag = aligned_magnitudes(curve, fit)
     doubled_mag = np.concatenate([mag, mag])
     doubled_err = np.concatenate([curve.mag_error, curve.mag_error])
 
@@ -208,7 +208,7 @@ def plot_folded_lightcurve(
         add_file_legend(ax, curve, uniform_style=True)
     ax.plot(model_phase, model, color="tab:red", lw=1.5)
     ax.set_xlabel("Phase")
-    ax.set_ylabel("Magnitude corrigee")
+    ax.set_ylabel("Magnitude alignee")
     ax.set_title(
         f"Courbe repliee - P = {format_period_with_uncertainty(fit.period_days, period_uncertainty_days)}, ordre {fit.order}\n"
         f"T0 = {format_t0(curve)} JD",
