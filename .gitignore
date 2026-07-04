@@ -1,7 +1,8 @@
 # Donnees et resultats locaux
 data/
+data*/
 output/
-output_v*/
+output*/
 
 # Environnements Python
 .venv/
