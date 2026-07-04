@@ -29,6 +29,7 @@ def read_observation_file(path: str | Path, encoding: str = "mbcs") -> Observati
     fmt = ""
     keywords: dict[str, list[str]] = {}
     jd: list[float] = []
+    jd_decimals: list[int] = []
     mag: list[float] = []
     err: list[float] = []
     ignored: list[list[str]] = []
@@ -60,6 +61,7 @@ def read_observation_file(path: str | Path, encoding: str = "mbcs") -> Observati
             for marker, value in zip(fmt, parts):
                 if marker == "D":
                     row_jd = float(value)
+                    jd_decimals.append(len(value.split(".", 1)[1]) if "." in value else 0)
                 elif marker == "V":
                     row_mag = float(value)
                 elif marker == "v":
@@ -84,6 +86,7 @@ def read_observation_file(path: str | Path, encoding: str = "mbcs") -> Observati
         fmt=fmt,
         keywords=keywords,
         jd=np.asarray(jd, dtype=float),
+        jd_decimals=np.asarray(jd_decimals, dtype=int),
         magnitude=np.asarray(mag, dtype=float),
         mag_error=np.asarray(err, dtype=float),
         ignored=ignored,
@@ -95,6 +98,7 @@ def read_lightcurve(paths: Iterable[str | Path], use_mid_exposure: bool = True) 
     jd_parts: list[np.ndarray] = []
     mag_parts: list[np.ndarray] = []
     err_parts: list[np.ndarray] = []
+    jd_decimal_parts: list[np.ndarray] = []
     group_parts: list[np.ndarray] = []
     group_names: list[str] = []
 
@@ -102,6 +106,7 @@ def read_lightcurve(paths: Iterable[str | Path], use_mid_exposure: bool = True) 
         group_names.append(obs.path.name)
         jd = obs.mid_exposure_jd() if use_mid_exposure else obs.jd.copy()
         jd_parts.append(jd)
+        jd_decimal_parts.append(obs.jd_decimals)
         mag_parts.append(obs.magnitude)
         err_parts.append(obs.mag_error)
         group_parts.append(np.full(obs.jd.shape, group_id, dtype=int))
@@ -109,6 +114,7 @@ def read_lightcurve(paths: Iterable[str | Path], use_mid_exposure: bool = True) 
     order = np.argsort(np.concatenate(jd_parts))
     return LightCurve(
         jd=np.concatenate(jd_parts)[order],
+        jd_decimals=np.concatenate(jd_decimal_parts)[order],
         magnitude=np.concatenate(mag_parts)[order],
         mag_error=np.concatenate(err_parts)[order],
         group=np.concatenate(group_parts)[order],

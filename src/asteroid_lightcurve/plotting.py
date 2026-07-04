@@ -33,6 +33,12 @@ def jd_to_date_label(jd: float) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+def format_t0(curve: LightCurve) -> str:
+    t0_index = int(np.argmin(curve.jd))
+    decimals = int(curve.jd_decimals[t0_index]) if curve.jd_decimals.size else 8
+    return f"{float(curve.jd[t0_index]):.{decimals}f}"
+
+
 def group_offsets(curve: LightCurve, fit: FitResult) -> np.ndarray:
     offsets = np.zeros(len(curve.group_names), dtype=float)
     for group_id in range(1, len(curve.group_names)):
@@ -196,7 +202,7 @@ def plot_folded_lightcurve(
     ax.set_ylabel("Magnitude corrigee")
     ax.set_title(
         f"Courbe repliee - P = {format_period(fit.period_hours)}, ordre {fit.order}\n"
-        f"T0 = {float(np.min(curve.jd)):.8f} JD",
+        f"T0 = {format_t0(curve)} JD",
         fontsize=12,
     )
     xlim, ylim = folded_axis_limits(curve, fit)
