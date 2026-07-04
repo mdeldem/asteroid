@@ -44,19 +44,19 @@ def write_period_summary(
         writer.writerow(
             [
                 "kind",
-                "period_hours",
                 "period_days",
+                "period_hours",
                 "delta_chi2",
-                "lower_hours",
-                "upper_hours",
-                "minus_hours",
-                "plus_hours",
-                "symmetric_hours",
                 "lower_days",
                 "upper_days",
                 "minus_days",
                 "plus_days",
                 "symmetric_days",
+                "lower_hours",
+                "upper_hours",
+                "minus_hours",
+                "plus_hours",
+                "symmetric_hours",
             ]
         )
         for kind, uncertainty in [
@@ -66,19 +66,19 @@ def write_period_summary(
             writer.writerow(
                 [
                     kind,
-                    f"{best_period_days * 24.0:.10f}",
                     f"{best_period_days:.10f}",
+                    f"{best_period_days * 24.0:.10f}",
                     f"{uncertainty.delta_chi2:.6f}",
-                    "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours:.10f}",
-                    "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours:.10f}",
-                    "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours:.10f}",
-                    "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours:.10f}",
-                    "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours:.10f}",
                     "" if uncertainty.lower_days is None else f"{uncertainty.lower_days:.10f}",
                     "" if uncertainty.upper_days is None else f"{uncertainty.upper_days:.10f}",
                     "" if uncertainty.minus_days is None else f"{uncertainty.minus_days:.10f}",
                     "" if uncertainty.plus_days is None else f"{uncertainty.plus_days:.10f}",
                     "" if uncertainty.symmetric_days is None else f"{uncertainty.symmetric_days:.10f}",
+                    "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours:.10f}",
+                    "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours:.10f}",
+                    "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours:.10f}",
+                    "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours:.10f}",
+                    "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours:.10f}",
                 ]
             )
 
@@ -220,13 +220,13 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     with (outdir / "fourier_order_summary.csv").open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle, delimiter=";")
-        writer.writerow(["order", "period_hours", "period_days", "chi2", "reduced_chi2", "aic", "bic"])
+        writer.writerow(["order", "period_days", "period_hours", "chi2", "reduced_chi2", "aic", "bic"])
         for fit in order_bests:
             writer.writerow(
                 [
                     fit.order,
-                    f"{fit.period_hours:.10f}",
                     f"{fit.period_days:.10f}",
+                    f"{fit.period_hours:.10f}",
                     f"{fit.chi2:.6f}",
                     f"{fit.reduced_chi2:.6f}",
                     f"{fit.aic:.6f}",
