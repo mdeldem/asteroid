@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Analyse de courbes de lumiere CCD d'asteroides"
 requires-python = ">=3.9"
 dependencies = [
+    "astropy>=5.3",
     "matplotlib>=3.7",
     "numpy>=1.24",
     "scipy>=1.10",

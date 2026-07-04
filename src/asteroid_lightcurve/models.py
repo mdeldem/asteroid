@@ -75,6 +75,7 @@ class LightCurve:
     group: np.ndarray
     group_names: list[str]
     files: list[ObservationFile]
+    time_label: str = "JD"
 
     @property
     def n_points(self) -> int:

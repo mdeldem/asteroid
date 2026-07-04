@@ -36,6 +36,14 @@ asteroid-lc search data\*.txt --period 0.2106178 --out output
 
 Dans ce mode, le programme ajuste seulement le modele Fourier a cette periode imposee, puis produit les courbes repliees et les residus.
 
+Par defaut, le programme interroge aussi JPL Horizons pour produire `ephemeris_by_file.csv`. Pour chaque fichier de mesures, il prend le milieu de l'intervalle d'observation, puis recupere la position geocentrique RA/DEC ICRF de l'asteroide a cette date. Ces positions sont ensuite utilisees pour convertir les dates `JD` en `HJD` geocentrique, et toute l'analyse de periode est faite sur les `HJD`. Le fichier `residuals.csv` conserve `jd_utc`, `hjd_utc` et `hjd_correction_days`.
+
+Pour travailler hors-ligne ou rester en `JD` non heliocentrique :
+
+```powershell
+asteroid-lc search data\*.txt --period 0.2106178 --no-ephemeris --out output
+```
+
 Options utiles :
 
 ```powershell

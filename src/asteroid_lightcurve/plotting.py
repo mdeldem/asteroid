@@ -226,7 +226,7 @@ def add_folded_title(
     ax.text(
         0.0,
         1.030,
-        f"ordre {fit.order}, T0 = {format_t0(curve)} JD, A = {model_amplitude(fit):.3f} mag",
+        f"ordre {fit.order}, T0 = {format_t0(curve)} {curve.time_label}, A = {model_amplitude(fit):.3f} mag",
         transform=ax.transAxes,
         ha="left",
         va="bottom",

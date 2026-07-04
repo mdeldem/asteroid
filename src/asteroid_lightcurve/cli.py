@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .ephemeris import FileEphemeris, HjdCorrection, apply_hjd_correction, fetch_file_ephemerides
 from .parser import expand_inputs, read_lightcurve
 from .period import PeriodUncertainty, estimate_period_uncertainty, gls_power, period_grid, refine_period, search_fourier
 from .plotting import (
@@ -120,6 +121,54 @@ def write_file_summary(path: Path, curve, fit) -> None:
             )
 
 
+def write_ephemeris_by_file(
+    path: Path,
+    curve,
+    ephemerides: list[FileEphemeris],
+    hjd_correction: HjdCorrection | None,
+) -> None:
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "file",
+                "label",
+                "observer",
+                "object_command",
+                "mid_jd",
+                "ra_deg_icrf",
+                "dec_deg_icrf",
+                "hjd_correction_mean_s",
+                "hjd_correction_min_s",
+                "hjd_correction_max_s",
+                "source",
+            ]
+        )
+        for group_id, eph in enumerate(ephemerides):
+            if hjd_correction is None:
+                mean_s = min_s = max_s = ""
+            else:
+                values = hjd_correction.correction_days[curve.group == group_id] * 86400.0
+                mean_s = f"{float(np.mean(values)):.6f}"
+                min_s = f"{float(np.min(values)):.6f}"
+                max_s = f"{float(np.max(values)):.6f}"
+            writer.writerow(
+                [
+                    eph.file,
+                    eph.label,
+                    eph.observer,
+                    eph.object_command,
+                    f"{eph.mid_jd:.8f}",
+                    f"{eph.ra_deg:.9f}",
+                    f"{eph.dec_deg:.9f}",
+                    mean_s,
+                    min_s,
+                    max_s,
+                    "JPL Horizons geocentric",
+                ]
+            )
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     paths = expand_inputs(args.files)
     curve = read_lightcurve(paths, use_mid_exposure=not args.keep_start_time)
@@ -141,6 +190,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     outdir = ensure_outdir(args.out)
     fixed_period_days = args.period
     produced_files: list[str] = []
+    ephemerides: list[FileEphemeris] = []
+    hjd_correction: HjdCorrection | None = None
+
+    if not args.no_ephemeris:
+        print("Recuperation des positions RA/DEC par fichier via JPL Horizons...")
+        ephemerides = fetch_file_ephemerides(curve, timeout=args.horizons_timeout)
+        hjd_correction = apply_hjd_correction(curve, ephemerides)
 
     if fixed_period_days is None:
         if args.min_period is None or args.max_period is None:
@@ -213,6 +269,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     plot_residuals(curve, best, outdir / "residuals.png")
     write_period_summary(outdir / "period_summary.csv", best.period_days, amplitude_mag, raw_uncertainty, scaled_uncertainty)
     write_file_summary(outdir / "file_summary.csv", curve, best)
+    if ephemerides:
+        write_ephemeris_by_file(outdir / "ephemeris_by_file.csv", curve, ephemerides, hjd_correction)
     produced_files.extend(
         [
             "folded_lightcurve.png",
@@ -225,6 +283,8 @@ def cmd_search(args: argparse.Namespace) -> int:
             "fourier_order_summary.csv",
         ]
     )
+    if ephemerides:
+        produced_files.append("ephemeris_by_file.csv")
     residual_path = outdir / "residuals.csv"
     aligned_mag = aligned_magnitudes(curve, best)
     aligned_fit = aligned_model(curve, best)
@@ -232,7 +292,9 @@ def cmd_search(args: argparse.Namespace) -> int:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
             [
-                "jd",
+                "jd_utc",
+                "hjd_utc",
+                "hjd_correction_days",
                 "magnitude",
                 "aligned_magnitude",
                 "mag_error",
@@ -242,8 +304,18 @@ def cmd_search(args: argparse.Namespace) -> int:
                 "file",
             ]
         )
-        for jd, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
-            curve.jd,
+        if hjd_correction is None:
+            jd_utc_values = curve.jd
+            hjd_utc_values = curve.jd
+            correction_values = np.zeros_like(curve.jd)
+        else:
+            jd_utc_values = hjd_correction.jd_utc
+            hjd_utc_values = hjd_correction.hjd_utc
+            correction_values = hjd_correction.correction_days
+        for jd_utc, hjd_utc, correction_days, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
+            jd_utc_values,
+            hjd_utc_values,
+            correction_values,
             curve.magnitude,
             aligned_mag,
             curve.mag_error,
@@ -254,7 +326,9 @@ def cmd_search(args: argparse.Namespace) -> int:
         ):
             writer.writerow(
                 [
-                    f"{jd:.8f}",
+                    f"{jd_utc:.8f}",
+                    f"{hjd_utc:.8f}",
+                    f"{correction_days:.10f}",
                     f"{mag:.6f}",
                     f"{aligned_mag_value:.6f}",
                     f"{err:.6f}",
@@ -350,6 +424,17 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--refine-width", type=float, default=0.01, help="Demi-largeur relative du raffinement")
     search_parser.add_argument("--refine-samples", type=int, default=2000, help="Echantillons du raffinement")
     search_parser.add_argument("--keep-start-time", action="store_true", help="Ne pas convertir vers le milieu de pose")
+    search_parser.add_argument(
+        "--no-ephemeris",
+        action="store_true",
+        help="Ne pas interroger JPL Horizons pour les positions RA/DEC par fichier",
+    )
+    search_parser.add_argument(
+        "--horizons-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout en secondes pour les appels JPL Horizons",
+    )
     search_parser.add_argument("--out", default="output", help="Dossier de sortie")
     search_parser.set_defaults(func=cmd_search)
     return parser
