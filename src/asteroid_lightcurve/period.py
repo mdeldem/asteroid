@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.linalg import lstsq
+from scipy.optimize import brentq
 
 from .models import LightCurve
 
@@ -19,6 +20,33 @@ class FitResult:
     coefficients: np.ndarray
     model: np.ndarray
     residuals: np.ndarray
+
+
+@dataclass
+class PeriodUncertainty:
+    period_hours: float
+    delta_chi2: float
+    lower_hours: float | None
+    upper_hours: float | None
+
+    @property
+    def minus_hours(self) -> float | None:
+        if self.lower_hours is None:
+            return None
+        return self.period_hours - self.lower_hours
+
+    @property
+    def plus_hours(self) -> float | None:
+        if self.upper_hours is None:
+            return None
+        return self.upper_hours - self.period_hours
+
+    @property
+    def symmetric_hours(self) -> float | None:
+        values = [value for value in [self.minus_hours, self.plus_hours] if value is not None]
+        if not values:
+            return None
+        return float(np.mean(values))
 
 
 def period_grid(min_period_hours: float, max_period_hours: float, samples: int) -> np.ndarray:
@@ -143,3 +171,42 @@ def refine_period(
     if best is None:
         raise RuntimeError("Raffinement impossible")
     return best
+
+
+def estimate_period_uncertainty(
+    curve: LightCurve,
+    fit: FitResult,
+    delta_chi2: float = 1.0,
+    max_fraction: float = 0.25,
+) -> PeriodUncertainty:
+    if delta_chi2 <= 0:
+        raise ValueError("delta_chi2 doit etre strictement positif")
+
+    period = fit.period_hours
+    target = fit.chi2 + delta_chi2
+
+    def chi2_minus_target(period_hours: float) -> float:
+        return weighted_fit(curve, period_hours, fit.order).chi2 - target
+
+    def find_crossing(direction: int) -> float | None:
+        step = max(period * 1e-6, 1e-8)
+        previous = period
+        limit = period * (1.0 + direction * max_fraction)
+        for _ in range(80):
+            current = period + direction * step
+            if (direction < 0 and current <= limit) or (direction > 0 and current >= limit):
+                return None
+            value = chi2_minus_target(current)
+            if value >= 0:
+                low, high = sorted([previous, current])
+                return float(brentq(chi2_minus_target, low, high, maxiter=100))
+            previous = current
+            step *= 1.5
+        return None
+
+    return PeriodUncertainty(
+        period_hours=period,
+        delta_chi2=delta_chi2,
+        lower_hours=find_crossing(-1),
+        upper_hours=find_crossing(1),
+    )

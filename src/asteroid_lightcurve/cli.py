@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from .parser import expand_inputs, read_lightcurve
-from .period import gls_power, period_grid, refine_period, search_fourier
+from .period import PeriodUncertainty, estimate_period_uncertainty, gls_power, period_grid, refine_period, search_fourier
 from .plotting import (
     corrected_magnitudes,
     corrected_model,
@@ -25,6 +25,62 @@ def parse_orders(value: str) -> range:
         return range(int(start), int(end) + 1)
     order = int(value)
     return range(order, order + 1)
+
+
+def format_uncertainty(value_hours: float | None) -> str:
+    if value_hours is None:
+        return "non bornee"
+    return f"{value_hours:.6f} h ({value_hours / 24.0:.8f} j)"
+
+
+def write_period_summary(
+    path: Path,
+    best_period_hours: float,
+    raw_uncertainty: PeriodUncertainty,
+    scaled_uncertainty: PeriodUncertainty,
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "kind",
+                "period_hours",
+                "period_days",
+                "delta_chi2",
+                "lower_hours",
+                "upper_hours",
+                "minus_hours",
+                "plus_hours",
+                "symmetric_hours",
+                "lower_days",
+                "upper_days",
+                "minus_days",
+                "plus_days",
+                "symmetric_days",
+            ]
+        )
+        for kind, uncertainty in [
+            ("delta_chi2_1", raw_uncertainty),
+            ("scaled_delta_chi2", scaled_uncertainty),
+        ]:
+            writer.writerow(
+                [
+                    kind,
+                    f"{best_period_hours:.10f}",
+                    f"{best_period_hours / 24.0:.10f}",
+                    f"{uncertainty.delta_chi2:.6f}",
+                    "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours:.10f}",
+                    "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours:.10f}",
+                    "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours:.10f}",
+                    "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours:.10f}",
+                    "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours:.10f}",
+                    "" if uncertainty.lower_hours is None else f"{uncertainty.lower_hours / 24.0:.10f}",
+                    "" if uncertainty.upper_hours is None else f"{uncertainty.upper_hours / 24.0:.10f}",
+                    "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours / 24.0:.10f}",
+                    "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours / 24.0:.10f}",
+                    "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours / 24.0:.10f}",
+                ]
+            )
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -52,7 +108,9 @@ def cmd_search(args: argparse.Namespace) -> int:
     if fixed_period_hours is None:
         if args.min_period is None or args.max_period is None:
             raise SystemExit("--min-period et --max-period sont requis sans --period")
-        periods = period_grid(args.min_period, args.max_period, args.samples)
+        min_period_hours = args.min_period * 24.0
+        max_period_hours = args.max_period * 24.0
+        periods = period_grid(min_period_hours, max_period_hours, args.samples)
 
         gls = gls_power(curve, periods)
         gls_best_period = float(periods[int(np.argmax(gls))])
@@ -97,12 +155,17 @@ def cmd_search(args: argparse.Namespace) -> int:
     plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve.png")
     plot_folded_lightcurve(curve, best, outdir / "folded_lightcurve_by_file.png", by_file=True)
     plot_residuals(curve, best, outdir / "residuals.png")
+    raw_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=1.0)
+    scaled_delta = max(1.0, best.reduced_chi2)
+    scaled_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=scaled_delta)
+    write_period_summary(outdir / "period_summary.csv", best.period_hours, raw_uncertainty, scaled_uncertainty)
     produced_files.extend(
         [
             "folded_lightcurve.png",
             "folded_lightcurve_by_file.png",
             "residuals.png",
             "residuals.csv",
+            "period_summary.csv",
             "fourier_order_summary.csv",
         ]
     )
@@ -170,7 +233,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     if fixed_period_hours is None:
         print("=== GLS ===")
         print(f"Meilleure periode GLS: {format_period(gls_best_period)}")
-        if gls_best_period * 2.0 <= args.max_period:
+        if gls_best_period * 2.0 <= max_period_hours:
             print(f"Candidat double-pic 2 x GLS: {format_period(gls_best_period * 2.0)}")
         print(f"Puissance GLS: {float(np.max(gls)):.6f}")
         print("Note: pour un asteroide, GLS peut accrocher P/2 si la courbe est double-pic.")
@@ -186,6 +249,20 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Chi2 reduit: {best.reduced_chi2:.6f}")
     print(f"AIC: {best.aic:.6f}")
     print(f"BIC: {best.bic:.6f}")
+    print()
+    print("=== Incertitude sur P ===")
+    print(
+        "Profil chi2, delta chi2 = 1: "
+        f"-{format_uncertainty(raw_uncertainty.minus_hours)} / "
+        f"+{format_uncertainty(raw_uncertainty.plus_hours)}"
+    )
+    print(
+        f"Profil chi2 reechelonne, delta chi2 = {scaled_delta:.6f}: "
+        f"-{format_uncertainty(scaled_uncertainty.minus_hours)} / "
+        f"+{format_uncertainty(scaled_uncertainty.plus_hours)}"
+    )
+    if scaled_delta > 1.0:
+        print("Note: l'incertitude reechelonnee tient compte du chi2 reduit > 1.")
     print()
     print("=== Fichiers produits ===")
     for name in produced_files:
@@ -204,8 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_parser = subparsers.add_parser("search", help="Chercher la periode de rotation")
     search_parser.add_argument("files", nargs="+", help="Fichiers ou motifs glob")
-    search_parser.add_argument("--min-period", type=float, help="Periode minimale en heures")
-    search_parser.add_argument("--max-period", type=float, help="Periode maximale en heures")
+    search_parser.add_argument("--min-period", type=float, help="Periode minimale en jours")
+    search_parser.add_argument("--max-period", type=float, help="Periode maximale en jours")
     search_parser.add_argument(
         "--period",
         type=float,

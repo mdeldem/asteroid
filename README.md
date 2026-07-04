@@ -23,10 +23,10 @@ python -m pip install -e .
 ## Recherche de periode
 
 ```powershell
-asteroid-lc search data\*.txt --min-period 2 --max-period 20 --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --out output
 ```
 
-Pour la recherche, `--min-period` et `--max-period` sont en heures. Les resultats et graphiques affichent la periode en heures et en jours. Les dates des mesures sont converties vers le milieu de pose quand la ligne `POS` fournit un temps de pose. Le premier champ de `POS` indique la position temporelle du JD : `-1` debut de pose, `0` milieu de pose, `1` fin de pose.
+Pour la recherche, `--min-period`, `--max-period` et `--period` sont en jours. Les resultats et graphiques affichent la periode en heures et en jours. Les dates des mesures sont converties vers le milieu de pose quand la ligne `POS` fournit un temps de pose. Le premier champ de `POS` indique la position temporelle du JD : `-1` debut de pose, `0` milieu de pose, `1` fin de pose.
 
 Si la periode est deja connue, on peut la fournir en jours et sauter toute la recherche de periode :
 
@@ -39,7 +39,7 @@ Dans ce mode, le programme ajuste seulement le modele Fourier a cette periode im
 Options utiles :
 
 ```powershell
-asteroid-lc search data\*.txt --orders 1:12 --samples 12000 --top 10 --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --orders 1:12 --samples 12000 --out output
 ```
 
 Pour afficher seulement un resume des fichiers :
