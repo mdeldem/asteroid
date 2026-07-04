@@ -12,6 +12,9 @@ from .plotting import (
     aligned_magnitudes,
     aligned_model,
     ensure_outdir,
+    file_date_labels,
+    model_amplitude,
+    per_file_scatter,
     format_period,
     plot_folded_lightcurve,
     plot_periodogram,
@@ -36,6 +39,7 @@ def format_uncertainty(value_days: float | None) -> str:
 def write_period_summary(
     path: Path,
     best_period_days: float,
+    amplitude_mag: float,
     raw_uncertainty: PeriodUncertainty,
     scaled_uncertainty: PeriodUncertainty,
 ) -> None:
@@ -46,6 +50,7 @@ def write_period_summary(
                 "kind",
                 "period_days",
                 "period_hours",
+                "amplitude_mag",
                 "delta_chi2",
                 "lower_days",
                 "upper_days",
@@ -68,6 +73,7 @@ def write_period_summary(
                     kind,
                     f"{best_period_days:.10f}",
                     f"{best_period_days * 24.0:.10f}",
+                    f"{amplitude_mag:.6f}",
                     f"{uncertainty.delta_chi2:.6f}",
                     "" if uncertainty.lower_days is None else f"{uncertainty.lower_days:.10f}",
                     "" if uncertainty.upper_days is None else f"{uncertainty.upper_days:.10f}",
@@ -79,6 +85,36 @@ def write_period_summary(
                     "" if uncertainty.minus_hours is None else f"{uncertainty.minus_hours:.10f}",
                     "" if uncertainty.plus_hours is None else f"{uncertainty.plus_hours:.10f}",
                     "" if uncertainty.symmetric_hours is None else f"{uncertainty.symmetric_hours:.10f}",
+                ]
+            )
+
+
+def write_file_summary(path: Path, curve, fit) -> None:
+    scatters = per_file_scatter(curve, fit)
+    labels = file_date_labels(curve)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "file",
+                "label",
+                "observer",
+                "n_points",
+                "scatter_mag",
+                "offset_mag",
+            ]
+        )
+        for group_id, label in enumerate(labels):
+            mask = curve.group == group_id
+            offset = 0.0 if group_id == 0 else fit.coefficients[group_id]
+            writer.writerow(
+                [
+                    curve.group_names[group_id],
+                    label,
+                    curve.files[group_id].observer_name,
+                    int(np.sum(mask)),
+                    "" if np.isnan(scatters[group_id]) else f"{scatters[group_id]:.6f}",
+                    f"{offset:.6f}",
                 ]
             )
 
@@ -153,6 +189,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     raw_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=1.0)
     scaled_delta = max(1.0, best.reduced_chi2)
     scaled_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=scaled_delta)
+    amplitude_mag = model_amplitude(best)
     plot_folded_lightcurve(
         curve,
         best,
@@ -167,7 +204,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         period_uncertainty_days=scaled_uncertainty.symmetric_days,
     )
     plot_residuals(curve, best, outdir / "residuals.png")
-    write_period_summary(outdir / "period_summary.csv", best.period_days, raw_uncertainty, scaled_uncertainty)
+    write_period_summary(outdir / "period_summary.csv", best.period_days, amplitude_mag, raw_uncertainty, scaled_uncertainty)
+    write_file_summary(outdir / "file_summary.csv", curve, best)
     produced_files.extend(
         [
             "folded_lightcurve.png",
@@ -175,6 +213,7 @@ def cmd_search(args: argparse.Namespace) -> int:
             "residuals.png",
             "residuals.csv",
             "period_summary.csv",
+            "file_summary.csv",
             "fourier_order_summary.csv",
         ]
     )
@@ -256,6 +295,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Meilleure periode: {format_period(best.period_days)}")
     print(f"Ordre retenu: {best.order}")
     print(f"Chi2 reduit: {best.reduced_chi2:.6f}")
+    print(f"Amplitude: {amplitude_mag:.3f} mag")
     print(f"AIC: {best.aic:.6f}")
     print(f"BIC: {best.bic:.6f}")
     print()

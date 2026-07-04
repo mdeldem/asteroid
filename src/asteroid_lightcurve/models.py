@@ -26,6 +26,10 @@ class ObservationFile:
         return " ".join(self.keywords.get("MES", []))
 
     @property
+    def observer_name(self) -> str:
+        return self.observer.split("@", 1)[0].strip()
+
+    @property
     def filter_name(self) -> str:
         values = self.keywords.get("FIL", [])
         return values[0] if values else ""

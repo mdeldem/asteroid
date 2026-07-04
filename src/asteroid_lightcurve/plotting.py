@@ -47,6 +47,13 @@ def format_t0(curve: LightCurve) -> str:
     return f"{float(curve.jd[t0_index]):.{decimals}f}"
 
 
+def object_title(curve: LightCurve) -> str:
+    for obs in curve.files:
+        if obs.object_name:
+            return obs.object_name
+    return "Objet"
+
+
 def group_offsets(curve: LightCurve, fit: FitResult) -> np.ndarray:
     offsets = np.zeros(len(curve.group_names), dtype=float)
     for group_id in range(1, len(curve.group_names)):
@@ -75,11 +82,29 @@ def file_date_labels(curve: LightCurve) -> list[str]:
     labels: list[str] = []
     for date in dates:
         if counts[date] == 1:
-            labels.append(date)
+            labels.append(f"[{date}]")
         else:
             seen[date] += 1
-            labels.append(f"{date}-{seen[date]}")
+            labels.append(f"[{date}-{seen[date]}]")
     return labels
+
+
+def model_amplitude(fit: FitResult) -> float:
+    model_phase = np.linspace(0.0, 1.0, 1000)
+    model = model_at_phase_for_coefficients(fit, model_phase)
+    return float(np.nanmax(model) - np.nanmin(model))
+
+
+def per_file_scatter(curve: LightCurve, fit: FitResult) -> np.ndarray:
+    aligned_residuals = aligned_magnitudes(curve, fit) - aligned_model(curve, fit)
+    scatters = np.full(len(curve.group_names), np.nan, dtype=float)
+    for group_id in range(len(curve.group_names)):
+        values = aligned_residuals[curve.group == group_id]
+        if values.size >= 2:
+            scatters[group_id] = float(np.std(values, ddof=1))
+        elif values.size == 1:
+            scatters[group_id] = 0.0
+    return scatters
 
 
 def file_plot_styles(count: int) -> tuple[list[str], list[str]]:
@@ -88,9 +113,23 @@ def file_plot_styles(count: int) -> tuple[list[str], list[str]]:
     return colors, markers[:count]
 
 
-def add_file_legend(ax: plt.Axes, curve: LightCurve, uniform_style: bool = False) -> None:
+def file_legend_labels(curve: LightCurve, fit: FitResult) -> list[str]:
+    date_labels = file_date_labels(curve)
+    scatters = per_file_scatter(curve, fit)
+    labels: list[str] = []
+    for group_id, date_label in enumerate(date_labels):
+        observer = curve.files[group_id].observer_name or "?"
+        if len(observer) > 30:
+            observer = observer[:30]
+        scatter = scatters[group_id]
+        scatter_label = "σ=?" if np.isnan(scatter) else f"σ={scatter * 1000.0:.0f} mmag"
+        labels.append(f"{date_label} {observer} ({scatter_label})")
+    return labels
+
+
+def add_file_legend(ax: plt.Axes, curve: LightCurve, fit: FitResult, uniform_style: bool = False) -> None:
     colors, markers = file_plot_styles(len(curve.group_names))
-    labels = file_date_labels(curve)
+    labels = file_legend_labels(curve, fit)
     handles = [
         Line2D(
             [0],
@@ -133,16 +172,20 @@ def plot_periodogram(
     plt.close(fig)
 
 
-def model_at_phase(curve: LightCurve, fit: FitResult, model_phase: np.ndarray) -> np.ndarray:
+def model_at_phase_for_coefficients(fit: FitResult, model_phase: np.ndarray) -> np.ndarray:
     model_angle = 2.0 * np.pi * model_phase
     model = np.full_like(model_phase, fit.coefficients[0])
-    harmonic_start = 1 + max(len(curve.group_names) - 1, 0)
+    harmonic_start = len(fit.coefficients) - 2 * fit.order
     for harmonic in range(1, fit.order + 1):
         cos_coef = fit.coefficients[harmonic_start + 2 * (harmonic - 1)]
         sin_coef = fit.coefficients[harmonic_start + 2 * (harmonic - 1) + 1]
         model += cos_coef * np.cos(harmonic * model_angle)
         model += sin_coef * np.sin(harmonic * model_angle)
     return model
+
+
+def model_at_phase(curve: LightCurve, fit: FitResult, model_phase: np.ndarray) -> np.ndarray:
+    return model_at_phase_for_coefficients(fit, model_phase)
 
 
 def folded_axis_limits(curve: LightCurve, fit: FitResult) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -172,10 +215,10 @@ def plot_folded_lightcurve(
     model_phase = np.linspace(0.0, 2.0, 600)
     model = model_at_phase(curve, fit, model_phase)
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(13.5, 5.5))
     if by_file:
         colors, markers = file_plot_styles(len(curve.group_names))
-        labels = file_date_labels(curve)
+        labels = file_legend_labels(curve, fit)
         for group_id, label in enumerate(labels):
             mask = curve.group == group_id
             group_phase = np.concatenate([ph[mask], ph[mask] + 1.0])
@@ -193,7 +236,7 @@ def plot_folded_lightcurve(
                 elinewidth=0.45,
                 label=label,
             )
-        add_file_legend(ax, curve)
+        add_file_legend(ax, curve, fit)
     else:
         ax.errorbar(
             doubled_phase,
@@ -205,21 +248,43 @@ def plot_folded_lightcurve(
             ecolor="0.7",
             color="tab:blue",
         )
-        add_file_legend(ax, curve, uniform_style=True)
+        add_file_legend(ax, curve, fit, uniform_style=True)
     ax.plot(model_phase, model, color="tab:red", lw=1.5)
     ax.set_xlabel("Phase")
     ax.set_ylabel("Magnitude alignee")
-    ax.set_title(
-        f"Courbe repliee - P = {format_period_with_uncertainty(fit.period_days, period_uncertainty_days)}, ordre {fit.order}\n"
-        f"T0 = {format_t0(curve)} JD",
-        fontsize=12,
+    ax.text(
+        0.0,
+        1.145,
+        object_title(curve),
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=17,
+    )
+    ax.text(
+        0.0,
+        1.075,
+        f"P = {format_period_with_uncertainty(fit.period_days, period_uncertainty_days)}",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=11,
+    )
+    ax.text(
+        0.0,
+        1.030,
+        f"ordre {fit.order}, T0 = {format_t0(curve)} JD, A = {model_amplitude(fit):.3f} mag",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=11,
     )
     xlim, ylim = folded_axis_limits(curve, fit)
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.grid(alpha=0.25)
-    fig.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
-    fig.savefig(path, dpi=160)
+    fig.tight_layout(rect=(0.0, 0.0, 0.88, 0.88))
+    fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
