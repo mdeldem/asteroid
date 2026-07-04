@@ -39,8 +39,8 @@ def write_period_summary(
     raw_uncertainty: PeriodUncertainty,
     scaled_uncertainty: PeriodUncertainty,
 ) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
         writer.writerow(
             [
                 "kind",
@@ -170,8 +170,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     residual_path = outdir / "residuals.csv"
     corrected_mag = corrected_magnitudes(curve, best)
     corrected_fit = corrected_model(curve, best)
-    with residual_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+    with residual_path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
         writer.writerow(
             [
                 "jd",
@@ -207,8 +207,8 @@ def cmd_search(args: argparse.Namespace) -> int:
                 ]
             )
 
-    with (outdir / "fourier_order_summary.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+    with (outdir / "fourier_order_summary.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
         writer.writerow(["order", "period_hours", "period_days", "chi2", "reduced_chi2", "aic", "bic"])
         for fit in order_bests:
             writer.writerow(
