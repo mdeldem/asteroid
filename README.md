@@ -5,7 +5,7 @@ Outils Python pour analyser des mesures CCD d'asteroides :
 - lecture des fichiers texte au format `FMT xDVvx`,
 - combinaison de plusieurs nuits/fichiers,
 - recherche de periode par GLS,
-- recherche de periode par serie de Fourier avec choix de l'ordre 1 a 12,
+- recherche du couple periode / ordre de Fourier par BIC,
 - production de periodogrammes, courbes repliees en phase et residus.
 
 ## Installation
@@ -49,6 +49,20 @@ Options utiles :
 ```powershell
 asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --orders 1:12 --samples 12000 --out output
 ```
+
+La recherche automatique suit une strategie robuste pour les courbes double-pic :
+
+```text
+GLS -> meilleurs pics -> test de P/2, P et 2P -> ordres Fourier -> choix du BIC minimal
+```
+
+Par defaut, les 20 meilleurs pics GLS sont testes avec les multiplicateurs `0.5,1,2`. On peut ajuster ces parametres :
+
+```powershell
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --gls-candidates 30 --gls-multipliers 0.5,1,2 --orders 2:8 --out output
+```
+
+Le fichier `period_order_candidates.csv` liste tous les couples periode/ordre testes, avec la periode GLS d'origine, le multiplicateur, le chi2, l'AIC et le BIC. Il permet de verifier pourquoi une periode double de la meilleure periode GLS peut etre retenue.
 
 Pour afficher seulement un resume des fichiers :
 

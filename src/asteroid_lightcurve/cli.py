@@ -8,7 +8,16 @@ import numpy as np
 
 from .ephemeris import FileEphemeris, HjdCorrection, apply_hjd_correction, fetch_file_ephemerides
 from .parser import expand_inputs, read_lightcurve
-from .period import PeriodUncertainty, estimate_period_uncertainty, gls_power, period_grid, refine_period, search_fourier
+from .period import (
+    CandidateFit,
+    PeriodUncertainty,
+    estimate_period_uncertainty,
+    gls_power,
+    period_grid,
+    refine_period,
+    search_fourier,
+    search_period_order_candidates,
+)
 from .plotting import (
     aligned_magnitudes,
     aligned_model,
@@ -30,6 +39,15 @@ def parse_orders(value: str) -> range:
         return range(int(start), int(end) + 1)
     order = int(value)
     return range(order, order + 1)
+
+
+def parse_multipliers(value: str) -> tuple[float, ...]:
+    multipliers = tuple(float(item.strip()) for item in value.split(",") if item.strip())
+    if not multipliers:
+        raise argparse.ArgumentTypeError("La liste des multiplicateurs ne doit pas etre vide")
+    if any(multiplier <= 0 for multiplier in multipliers):
+        raise argparse.ArgumentTypeError("Les multiplicateurs doivent etre strictement positifs")
+    return multipliers
 
 
 def format_uncertainty(value_days: float | None) -> str:
@@ -117,6 +135,52 @@ def write_file_summary(path: Path, curve, fit) -> None:
                     int(np.sum(mask)),
                     "" if np.isnan(scatters[group_id]) else f"{scatters[group_id]:.6f}",
                     f"{offset:.6f}",
+                ]
+            )
+
+
+def write_candidate_summary(path: Path, candidate_fits: list[CandidateFit]) -> None:
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "rank_bic",
+                "gls_rank",
+                "gls_period_days",
+                "gls_period_hours",
+                "gls_power",
+                "multiplier",
+                "candidate_period_days",
+                "candidate_period_hours",
+                "order",
+                "refined_period_days",
+                "refined_period_hours",
+                "chi2",
+                "reduced_chi2",
+                "aic",
+                "bic",
+            ]
+        )
+        for rank, candidate_fit in enumerate(candidate_fits, start=1):
+            candidate = candidate_fit.candidate
+            fit = candidate_fit.fit
+            writer.writerow(
+                [
+                    rank,
+                    candidate.rank,
+                    f"{candidate.gls_period_days:.10f}",
+                    f"{candidate.gls_period_hours:.10f}",
+                    f"{candidate.gls_power:.8f}",
+                    f"{candidate.multiplier:.6f}",
+                    f"{candidate.period_days:.10f}",
+                    f"{candidate.period_hours:.10f}",
+                    fit.order,
+                    f"{fit.period_days:.10f}",
+                    f"{fit.period_hours:.10f}",
+                    f"{fit.chi2:.6f}",
+                    f"{fit.reduced_chi2:.6f}",
+                    f"{fit.aic:.6f}",
+                    f"{fit.bic:.6f}",
                 ]
             )
 
@@ -214,14 +278,30 @@ def cmd_search(args: argparse.Namespace) -> int:
         )
         produced_files.append("gls_periodogram.png")
 
-        best, order_bests = search_fourier(curve, periods, parse_orders(args.orders))
+        best, candidate_fits, gls_candidates = search_period_order_candidates(
+            curve,
+            periods,
+            gls,
+            parse_orders(args.orders),
+            top_n=args.gls_candidates,
+            multipliers=args.gls_multipliers,
+            refine_width=args.refine_width,
+            refine_samples=args.candidate_refine_samples,
+        )
         best = refine_period(
             curve,
             best.period_days,
             best.order,
             width_fraction=args.refine_width,
             samples=args.refine_samples,
+            min_period_days=args.min_period,
+            max_period_days=args.max_period,
         )
+        order_bests = []
+        for order in parse_orders(args.orders):
+            fits_for_order = [candidate_fit.fit for candidate_fit in candidate_fits if candidate_fit.fit.order == order]
+            if fits_for_order:
+                order_bests.append(min(fits_for_order, key=lambda fit: fit.bic))
 
         bic_score = np.full_like(periods, np.nan, dtype=float)
         for idx, period in enumerate(periods):
@@ -242,6 +322,8 @@ def cmd_search(args: argparse.Namespace) -> int:
             np.asarray([fixed_period_days], dtype=float),
             parse_orders(args.orders),
         )
+        candidate_fits = []
+        gls_candidates = []
 
     raw_uncertainty = estimate_period_uncertainty(curve, best, delta_chi2=1.0)
     scaled_delta = max(1.0, best.reduced_chi2)
@@ -269,6 +351,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     plot_residuals(curve, best, outdir / "residuals.png")
     write_period_summary(outdir / "period_summary.csv", best.period_days, amplitude_mag, raw_uncertainty, scaled_uncertainty)
     write_file_summary(outdir / "file_summary.csv", curve, best)
+    if fixed_period_days is None:
+        write_candidate_summary(outdir / "period_order_candidates.csv", candidate_fits)
     if ephemerides:
         write_ephemeris_by_file(outdir / "ephemeris_by_file.csv", curve, ephemerides, hjd_correction)
     produced_files.extend(
@@ -283,6 +367,8 @@ def cmd_search(args: argparse.Namespace) -> int:
             "fourier_order_summary.csv",
         ]
     )
+    if fixed_period_days is None:
+        produced_files.append("period_order_candidates.csv")
     if ephemerides:
         produced_files.append("ephemeris_by_file.csv")
     residual_path = outdir / "residuals.csv"
@@ -382,6 +468,9 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Amplitude: {amplitude_mag:.3f} mag")
     print(f"AIC: {best.aic:.6f}")
     print(f"BIC: {best.bic:.6f}")
+    if fixed_period_days is None:
+        print(f"Periodes candidates GLS: {len(gls_candidates)}")
+        print(f"Couples periode/ordre testes: {len(candidate_fits)}")
     print()
     print("=== Incertitude sur P ===")
     print(
@@ -423,7 +512,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.add_argument("--samples", type=int, default=8000, help="Nombre d'echantillons de periode")
     search_parser.add_argument("--orders", default="1:12", help="Ordres Fourier, ex: 1:12 ou 4")
+    search_parser.add_argument("--gls-candidates", type=int, default=20, help="Nombre de pics GLS a tester")
+    search_parser.add_argument(
+        "--gls-multipliers",
+        type=parse_multipliers,
+        default=(0.5, 1.0, 2.0),
+        help="Multiplicateurs appliques a chaque pic GLS, ex: 0.5,1,2",
+    )
     search_parser.add_argument("--refine-width", type=float, default=0.01, help="Demi-largeur relative du raffinement")
+    search_parser.add_argument(
+        "--candidate-refine-samples",
+        type=int,
+        default=300,
+        help="Echantillons de raffinement par couple candidat periode/ordre",
+    )
     search_parser.add_argument("--refine-samples", type=int, default=2000, help="Echantillons du raffinement")
     search_parser.add_argument("--keep-start-time", action="store_true", help="Ne pas convertir vers le milieu de pose")
     search_parser.add_argument(

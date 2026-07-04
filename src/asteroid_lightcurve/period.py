@@ -87,6 +87,29 @@ class PeriodUncertainty:
         return self.symmetric_days * 24.0
 
 
+@dataclass
+class GlCandidate:
+    rank: int
+    gls_period_days: float
+    gls_power: float
+    multiplier: float
+    period_days: float
+
+    @property
+    def period_hours(self) -> float:
+        return self.period_days * 24.0
+
+    @property
+    def gls_period_hours(self) -> float:
+        return self.gls_period_days * 24.0
+
+
+@dataclass
+class CandidateFit:
+    candidate: GlCandidate
+    fit: FitResult
+
+
 def period_grid(min_period_days: float, max_period_days: float, samples: int) -> np.ndarray:
     if min_period_days <= 0 or max_period_days <= min_period_days:
         raise ValueError("Les bornes de periode doivent verifier 0 < min < max")
@@ -167,6 +190,68 @@ def gls_power(curve: LightCurve, periods_days: np.ndarray) -> np.ndarray:
     return powers
 
 
+def gls_peak_candidates(
+    periods_days: np.ndarray,
+    powers: np.ndarray,
+    top_n: int,
+    multipliers: tuple[float, ...] = (0.5, 1.0, 2.0),
+) -> list[GlCandidate]:
+    if top_n <= 0:
+        raise ValueError("top_n doit etre strictement positif")
+
+    periods = np.asarray(periods_days, dtype=float)
+    score = np.asarray(powers, dtype=float)
+    if periods.size != score.size or periods.size == 0:
+        raise ValueError("periods_days et powers doivent avoir la meme taille non nulle")
+
+    peak_indices: list[int] = []
+    if score.size >= 3:
+        for idx in range(1, score.size - 1):
+            if score[idx] >= score[idx - 1] and score[idx] >= score[idx + 1]:
+                peak_indices.append(idx)
+    if not peak_indices:
+        peak_indices = list(range(score.size))
+
+    peak_indices.sort(key=lambda idx: score[idx], reverse=True)
+    min_period = float(np.min(periods))
+    max_period = float(np.max(periods))
+    relative_tol = max(1e-8, 1.0 / max(periods.size, 1))
+    candidates: list[GlCandidate] = []
+    seen: list[float] = []
+
+    for rank, idx in enumerate(peak_indices[:top_n], start=1):
+        gls_period = float(periods[idx])
+        for multiplier in multipliers:
+            candidate_period = gls_period * float(multiplier)
+            if candidate_period < min_period or candidate_period > max_period:
+                continue
+            if any(abs(candidate_period - value) <= relative_tol * max(candidate_period, value) for value in seen):
+                continue
+            seen.append(candidate_period)
+            candidates.append(
+                GlCandidate(
+                    rank=rank,
+                    gls_period_days=gls_period,
+                    gls_power=float(score[idx]),
+                    multiplier=float(multiplier),
+                    period_days=float(candidate_period),
+                )
+            )
+
+    if not candidates:
+        best_idx = int(np.argmax(score))
+        candidates.append(
+            GlCandidate(
+                rank=1,
+                gls_period_days=float(periods[best_idx]),
+                gls_power=float(score[best_idx]),
+                multiplier=1.0,
+                period_days=float(periods[best_idx]),
+            )
+        )
+    return candidates
+
+
 def search_fourier(
     curve: LightCurve,
     periods_days: np.ndarray,
@@ -196,10 +281,18 @@ def refine_period(
     order: int,
     width_fraction: float = 0.01,
     samples: int = 2000,
+    min_period_days: float | None = None,
+    max_period_days: float | None = None,
 ) -> FitResult:
     half_width = initial_period_days * width_fraction
     low = max(initial_period_days - half_width, initial_period_days * 0.5)
     high = initial_period_days + half_width
+    if min_period_days is not None:
+        low = max(low, min_period_days)
+    if max_period_days is not None:
+        high = min(high, max_period_days)
+    if high <= low:
+        return weighted_fit(curve, initial_period_days, order)
     periods = period_grid(low, high, samples)
     best: FitResult | None = None
     for period in periods:
@@ -209,6 +302,43 @@ def refine_period(
     if best is None:
         raise RuntimeError("Raffinement impossible")
     return best
+
+
+def search_period_order_candidates(
+    curve: LightCurve,
+    periods_days: np.ndarray,
+    powers: np.ndarray,
+    orders: range,
+    top_n: int = 20,
+    multipliers: tuple[float, ...] = (0.5, 1.0, 2.0),
+    refine_width: float = 0.01,
+    refine_samples: int = 300,
+) -> tuple[FitResult, list[CandidateFit], list[GlCandidate]]:
+    candidates = gls_peak_candidates(periods_days, powers, top_n, multipliers)
+    min_period = float(np.min(periods_days))
+    max_period = float(np.max(periods_days))
+    candidate_fits: list[CandidateFit] = []
+    best: FitResult | None = None
+
+    for candidate in candidates:
+        for order in orders:
+            fit = refine_period(
+                curve,
+                candidate.period_days,
+                order,
+                width_fraction=refine_width,
+                samples=refine_samples,
+                min_period_days=min_period,
+                max_period_days=max_period,
+            )
+            candidate_fits.append(CandidateFit(candidate=candidate, fit=fit))
+            if best is None or fit.bic < best.bic:
+                best = fit
+
+    if best is None:
+        raise RuntimeError("Aucun couple periode/ordre candidat n'a pu etre calcule")
+    candidate_fits.sort(key=lambda item: item.fit.bic)
+    return best, candidate_fits, candidates
 
 
 def estimate_period_uncertainty(
