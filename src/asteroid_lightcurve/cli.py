@@ -18,6 +18,7 @@ from .models import LightCurve, subset_lightcurve
 from .parser import expand_inputs, read_lightcurve
 from .period import (
     CandidateFit,
+    PeriodSelection,
     PeriodUncertainty,
     estimate_period_uncertainty,
     gls_power,
@@ -177,7 +178,9 @@ def write_candidate_summary(path: Path, candidate_fits: list[CandidateFit]) -> N
                 "chi2",
                 "reduced_chi2",
                 "aic",
+                "aicc",
                 "bic",
+                "last_harmonic_significance",
             ]
         )
         for rank, candidate_fit in enumerate(candidate_fits, start=1):
@@ -199,7 +202,9 @@ def write_candidate_summary(path: Path, candidate_fits: list[CandidateFit]) -> N
                     f"{fit.chi2:.6f}",
                     f"{fit.reduced_chi2:.6f}",
                     f"{fit.aic:.6f}",
+                    f"{fit.aicc:.6f}",
                     f"{fit.bic:.6f}",
+                    "" if not fit.harmonic_significance else f"{fit.harmonic_significance[-1]:.6f}",
                 ]
             )
 
@@ -207,7 +212,19 @@ def write_candidate_summary(path: Path, candidate_fits: list[CandidateFit]) -> N
 def write_order_summary(path: Path, order_bests) -> None:
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle, delimiter=";")
-        writer.writerow(["order", "period_days", "period_hours", "chi2", "reduced_chi2", "aic", "bic"])
+        writer.writerow(
+            [
+                "order",
+                "period_days",
+                "period_hours",
+                "chi2",
+                "reduced_chi2",
+                "aic",
+                "aicc",
+                "bic",
+                "last_harmonic_significance",
+            ]
+        )
         for fit in order_bests:
             writer.writerow(
                 [
@@ -217,7 +234,55 @@ def write_order_summary(path: Path, order_bests) -> None:
                     f"{fit.chi2:.6f}",
                     f"{fit.reduced_chi2:.6f}",
                     f"{fit.aic:.6f}",
+                    f"{fit.aicc:.6f}",
                     f"{fit.bic:.6f}",
+                    "" if not fit.harmonic_significance else f"{fit.harmonic_significance[-1]:.6f}",
+                ]
+            )
+
+
+def write_period_selection_summary(path: Path, selection: PeriodSelection) -> None:
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            [
+                "kind",
+                "strategy",
+                "order",
+                "period_days",
+                "period_hours",
+                "chi2",
+                "reduced_chi2",
+                "aic",
+                "aicc",
+                "bic",
+                "stability_tolerance",
+                "harmonic_significance_threshold",
+                "last_harmonic_significance",
+            ]
+        )
+        rows = [
+            ("selected", selection.selected_fit),
+            ("reference_order", selection.reference_fit),
+            ("global_bic_best", selection.bic_best_fit),
+        ]
+        rows.extend((f"stable_order_{fit.order}", fit) for fit in selection.stable_order_fits)
+        for kind, fit in rows:
+            writer.writerow(
+                [
+                    kind,
+                    selection.strategy,
+                    fit.order,
+                    f"{fit.period_days:.10f}",
+                    f"{fit.period_hours:.10f}",
+                    f"{fit.chi2:.6f}",
+                    f"{fit.reduced_chi2:.6f}",
+                    f"{fit.aic:.6f}",
+                    f"{fit.aicc:.6f}",
+                    f"{fit.bic:.6f}",
+                    f"{selection.stability_tolerance:.6f}",
+                    f"{selection.harmonic_significance_threshold:.6f}",
+                    "" if not fit.harmonic_significance else f"{fit.harmonic_significance[-1]:.6f}",
                 ]
             )
 
@@ -237,6 +302,7 @@ def write_run_metadata(
     produced_files: list[str],
     best,
     residual_best,
+    selection: PeriodSelection | None,
 ) -> None:
     parameters = {
         "files": list(args.files),
@@ -288,6 +354,7 @@ def write_run_metadata(
             "fourier_order": int(best.order),
             "reduced_chi2": float(best.reduced_chi2),
             "aic": float(best.aic),
+            "aicc": float(best.aicc),
             "bic": float(best.bic),
             "residual_filtered_period_days": None if residual_best is None else float(residual_best.period_days),
             "residual_filtered_period_hours": None if residual_best is None else float(residual_best.period_hours),
@@ -296,6 +363,33 @@ def write_run_metadata(
         },
         "produced_files": produced_files,
     }
+    if selection is not None:
+        data["selection"] = {
+            "strategy": selection.strategy,
+            "stability_tolerance": float(selection.stability_tolerance),
+            "reference_order": int(selection.reference_fit.order),
+            "reference_period_days": float(selection.reference_fit.period_days),
+            "selected_order": int(selection.selected_fit.order),
+            "selected_period_days": float(selection.selected_fit.period_days),
+            "global_bic_best_order": int(selection.bic_best_fit.order),
+            "global_bic_best_period_days": float(selection.bic_best_fit.period_days),
+            "global_bic_best_bic": float(selection.bic_best_fit.bic),
+            "harmonic_significance_threshold": float(selection.harmonic_significance_threshold),
+            "stable_orders": [
+                {
+                    "order": int(fit.order),
+                    "period_days": float(fit.period_days),
+                    "period_hours": float(fit.period_hours),
+                    "reduced_chi2": float(fit.reduced_chi2),
+                    "aicc": float(fit.aicc),
+                    "bic": float(fit.bic),
+                    "last_harmonic_significance": None
+                    if not fit.harmonic_significance
+                    else float(fit.harmonic_significance[-1]),
+                }
+                for fit in selection.stable_order_fits
+            ],
+        }
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
@@ -480,7 +574,7 @@ def run_period_search(
         outdir / f"{prefix}gls_periodogram.png",
     )
 
-    best, candidate_fits, gls_candidates = search_period_order_candidates(
+    best, candidate_fits, gls_candidates, selection = search_period_order_candidates(
         curve,
         periods,
         gls,
@@ -499,6 +593,7 @@ def run_period_search(
         min_period_days=args.min_period,
         max_period_days=args.max_period,
     )
+    selection.selected_fit = best
     order_bests = []
     for order in parse_orders(args.orders):
         fits_for_order = [candidate_fit.fit for candidate_fit in candidate_fits if candidate_fit.fit.order == order]
@@ -515,7 +610,7 @@ def run_period_search(
         f"Score Fourier ordre {best.order} (-BIC)",
         outdir / f"{prefix}fourier_period_search.png",
     )
-    return best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls
+    return best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls, selection
 
 
 def write_ephemeris_by_file(
@@ -597,8 +692,13 @@ def cmd_search(args: argparse.Namespace) -> int:
         ephemerides = fetch_file_ephemerides(curve, timeout=args.horizons_timeout)
         hjd_correction = apply_hjd_correction(curve, ephemerides)
 
+    selection: PeriodSelection | None = None
     if fixed_period_days is None:
-        best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls = run_period_search(curve, args, outdir)
+        best, order_bests, candidate_fits, gls_candidates, gls_best_period, gls, selection = run_period_search(
+            curve,
+            args,
+            outdir,
+        )
         produced_files.extend(["gls_periodogram.png", "fourier_period_search.png"])
     else:
         if fixed_period_days <= 0:
@@ -639,6 +739,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     write_file_summary(outdir / "file_summary.csv", curve, best)
     if fixed_period_days is None:
         write_candidate_summary(outdir / "period_order_candidates.csv", candidate_fits)
+        if selection is not None:
+            write_period_selection_summary(outdir / "period_selection_summary.csv", selection)
     if ephemerides:
         write_ephemeris_by_file(outdir / "ephemeris_by_file.csv", curve, ephemerides, hjd_correction)
     produced_files.extend(
@@ -655,6 +757,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     )
     if fixed_period_days is None:
         produced_files.append("period_order_candidates.csv")
+        produced_files.append("period_selection_summary.csv")
     if ephemerides:
         produced_files.append("ephemeris_by_file.csv")
     write_residual_table(outdir / "residuals.csv", curve, best, hjd_correction)
@@ -698,6 +801,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 _residual_gls_candidates,
                 _residual_gls_best_period,
                 _residual_gls,
+                residual_selection,
             ) = run_period_search(filtered_curve, args, outdir, prefix="residual_filtered_")
             residual_raw_uncertainty = estimate_period_uncertainty(filtered_curve, residual_best, delta_chi2=1.0)
             residual_scaled_delta = max(1.0, residual_best.reduced_chi2)
@@ -737,6 +841,7 @@ def cmd_search(args: argparse.Namespace) -> int:
             write_file_summary(outdir / "residual_filtered_file_summary.csv", filtered_curve, residual_best)
             write_candidate_summary(outdir / "residual_filtered_period_order_candidates.csv", residual_candidate_fits)
             write_order_summary(outdir / "residual_filtered_fourier_order_summary.csv", residual_order_bests)
+            write_period_selection_summary(outdir / "residual_filtered_period_selection_summary.csv", residual_selection)
             write_residual_table(
                 outdir / "residual_filtered_residuals.csv",
                 filtered_curve,
@@ -757,11 +862,12 @@ def cmd_search(args: argparse.Namespace) -> int:
                     "residual_filtered_file_summary.csv",
                     "residual_filtered_period_order_candidates.csv",
                     "residual_filtered_fourier_order_summary.csv",
+                    "residual_filtered_period_selection_summary.csv",
                 ]
             )
 
     produced_files.append("run_metadata.json")
-    write_run_metadata(outdir / "run_metadata.json", args, paths, curve, produced_files, best, residual_best)
+    write_run_metadata(outdir / "run_metadata.json", args, paths, curve, produced_files, best, residual_best, selection)
 
     print("=== Donnees ===")
     print(f"Fichiers: {len(curve.files)}")
@@ -787,7 +893,23 @@ def cmd_search(args: argparse.Namespace) -> int:
     print(f"Chi2 reduit: {best.reduced_chi2:.6f}")
     print(f"Amplitude: {amplitude_mag:.3f} mag")
     print(f"AIC: {best.aic:.6f}")
+    print(f"AICc: {best.aicc:.6f}")
     print(f"BIC: {best.bic:.6f}")
+    if selection is not None:
+        print(f"Strategie de selection: {selection.strategy}")
+        print(
+            "Reference ordre bas: "
+            f"ordre {selection.reference_fit.order}, {format_period(selection.reference_fit.period_days)}"
+        )
+        if (
+            abs(selection.bic_best_fit.period_days - best.period_days)
+            > selection.stability_tolerance * best.period_days
+        ):
+            print(
+                "Meilleur BIC brut non retenu: "
+                f"{format_period(selection.bic_best_fit.period_days)}, "
+                f"ordre {selection.bic_best_fit.order}, BIC {selection.bic_best_fit.bic:.6f}"
+            )
     if fixed_period_days is None:
         print(f"Periodes candidates GLS: {len(gls_candidates)}")
         print(f"Couples periode/ordre testes: {len(candidate_fits)}")

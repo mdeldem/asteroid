@@ -62,7 +62,7 @@ Par defaut, les 20 meilleurs pics GLS sont testes avec les multiplicateurs `0.5,
 asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --gls-candidates 30 --gls-multipliers 0.5,1,2 --orders 2:8 --out output
 ```
 
-Le fichier `period_order_candidates.csv` liste tous les couples periode/ordre testes, avec la periode GLS d'origine, le multiplicateur, le chi2, l'AIC et le BIC. Il permet de verifier pourquoi une periode double de la meilleure periode GLS peut etre retenue. Le fichier `run_metadata.json` conserve la commande, les fichiers d'entree resolus, les parametres de recherche comme `--min-period` et `--max-period`, ainsi que les principaux resultats.
+Le fichier `period_order_candidates.csv` liste tous les couples periode/ordre testes, avec la periode GLS d'origine, le multiplicateur, le chi2, l'AIC, l'AICc et le BIC. Il permet de verifier les alternatives classees par BIC brut. Le choix final utilise une selection hierarchique plus prudente : une periode de reference est d'abord choisie avec un ordre Fourier bas, puis l'ordre final est augmente seulement dans cette famille de periode stable si le BIC, le chi2 reduit et la significativite de l'harmonique ajoute le justifient. Le fichier `period_selection_summary.csv` resume cette decision et indique aussi le meilleur BIC brut si celui-ci n'est pas retenu. Le fichier `run_metadata.json` conserve la commande, les fichiers d'entree resolus, les parametres de recherche comme `--min-period` et `--max-period`, ainsi que les principaux resultats.
 
 ## Filtrage robuste des residus
 

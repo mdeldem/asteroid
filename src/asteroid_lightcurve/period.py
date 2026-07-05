@@ -17,6 +17,8 @@ class FitResult:
     reduced_chi2: float
     bic: float
     aic: float
+    aicc: float
+    harmonic_significance: tuple[float, ...]
     coefficients: np.ndarray
     model: np.ndarray
     residuals: np.ndarray
@@ -110,6 +112,17 @@ class CandidateFit:
     fit: FitResult
 
 
+@dataclass
+class PeriodSelection:
+    strategy: str
+    selected_fit: FitResult
+    bic_best_fit: FitResult
+    reference_fit: FitResult
+    stable_order_fits: list[FitResult]
+    stability_tolerance: float
+    harmonic_significance_threshold: float
+
+
 def period_grid(min_period_days: float, max_period_days: float, samples: int) -> np.ndarray:
     if min_period_days <= 0 or max_period_days <= min_period_days:
         raise ValueError("Les bornes de periode doivent verifier 0 < min < max")
@@ -166,7 +179,27 @@ def weighted_fit(
     dof = max(n - k, 1)
     reduced = chi2 / dof
     aic = chi2 + 2.0 * k
+    aicc = aic + (2.0 * k * (k + 1.0) / (n - k - 1.0)) if n > k + 1 else float("inf")
     bic = chi2 + k * np.log(max(n, 2))
+    covariance = np.linalg.pinv(xw.T @ xw) * reduced
+    harmonic_offset = 1 + max(n_groups - 1, 0)
+    harmonic_significance: list[float] = []
+    for harmonic in range(order):
+        cos_idx = harmonic_offset + 2 * harmonic
+        sin_idx = cos_idx + 1
+        cos_coeff = float(coefficients[cos_idx])
+        sin_coeff = float(coefficients[sin_idx])
+        amplitude = float(np.hypot(cos_coeff, sin_coeff))
+        if amplitude <= 0:
+            harmonic_significance.append(0.0)
+            continue
+        gradient = np.array([cos_coeff / amplitude, sin_coeff / amplitude])
+        harmonic_covariance = covariance[np.ix_([cos_idx, sin_idx], [cos_idx, sin_idx])]
+        amplitude_variance = float(gradient @ harmonic_covariance @ gradient)
+        if not np.isfinite(amplitude_variance) or amplitude_variance <= 0:
+            harmonic_significance.append(float("inf"))
+        else:
+            harmonic_significance.append(amplitude / float(np.sqrt(amplitude_variance)))
     return FitResult(
         period_days=float(period_days),
         order=order,
@@ -174,6 +207,8 @@ def weighted_fit(
         reduced_chi2=float(reduced),
         bic=float(bic),
         aic=float(aic),
+        aicc=float(aicc),
+        harmonic_significance=tuple(harmonic_significance),
         coefficients=coefficients,
         model=model,
         residuals=residuals,
@@ -313,12 +348,12 @@ def search_period_order_candidates(
     multipliers: tuple[float, ...] = (0.5, 1.0, 2.0),
     refine_width: float = 0.01,
     refine_samples: int = 300,
-) -> tuple[FitResult, list[CandidateFit], list[GlCandidate]]:
+) -> tuple[FitResult, list[CandidateFit], list[GlCandidate], PeriodSelection]:
     candidates = gls_peak_candidates(periods_days, powers, top_n, multipliers)
     min_period = float(np.min(periods_days))
     max_period = float(np.max(periods_days))
     candidate_fits: list[CandidateFit] = []
-    best: FitResult | None = None
+    bic_best: FitResult | None = None
 
     for candidate in candidates:
         for order in orders:
@@ -332,13 +367,74 @@ def search_period_order_candidates(
                 max_period_days=max_period,
             )
             candidate_fits.append(CandidateFit(candidate=candidate, fit=fit))
-            if best is None or fit.bic < best.bic:
-                best = fit
+            if bic_best is None or fit.bic < bic_best.bic:
+                bic_best = fit
 
-    if best is None:
+    if bic_best is None:
         raise RuntimeError("Aucun couple periode/ordre candidat n'a pu etre calcule")
     candidate_fits.sort(key=lambda item: item.fit.bic)
-    return best, candidate_fits, candidates
+    selection = select_stable_period(candidate_fits, orders, stability_tolerance=0.02)
+    return selection.selected_fit, candidate_fits, candidates, selection
+
+
+def select_stable_period(
+    candidate_fits: list[CandidateFit],
+    orders: range,
+    stability_tolerance: float = 0.02,
+    harmonic_significance_threshold: float = 3.0,
+) -> PeriodSelection:
+    if not candidate_fits:
+        raise RuntimeError("Aucun ajustement candidat a selectionner")
+
+    order_values = list(orders)
+    if not order_values:
+        raise RuntimeError("Aucun ordre Fourier a selectionner")
+
+    bic_best = min((item.fit for item in candidate_fits), key=lambda fit: fit.bic)
+    reference_order = 2 if 2 in order_values else min(order_values)
+    reference_items = [item for item in candidate_fits if item.fit.order == reference_order]
+    if not reference_items:
+        reference_items = candidate_fits
+    reference_fit = min((item.fit for item in reference_items), key=lambda fit: fit.bic)
+    reference_period = reference_fit.period_days
+
+    stable_order_fits: list[FitResult] = []
+    for order in sorted(order_values):
+        fits_for_order = [
+            item.fit
+            for item in candidate_fits
+            if item.fit.order == order
+            and abs(item.fit.period_days - reference_period) <= stability_tolerance * reference_period
+        ]
+        if fits_for_order:
+            stable_order_fits.append(min(fits_for_order, key=lambda fit: fit.bic))
+
+    if not stable_order_fits:
+        stable_order_fits = [reference_fit]
+
+    selected_fit = stable_order_fits[0]
+    previous_fit = stable_order_fits[0]
+    for fit in stable_order_fits[1:]:
+        added_significance = fit.harmonic_significance[fit.order - 1] if fit.harmonic_significance else 0.0
+        if (
+            fit.bic < previous_fit.bic
+            and fit.reduced_chi2 <= previous_fit.reduced_chi2
+            and added_significance >= harmonic_significance_threshold
+        ):
+            selected_fit = fit
+            previous_fit = fit
+        else:
+            break
+
+    return PeriodSelection(
+        strategy="stable_order",
+        selected_fit=selected_fit,
+        bic_best_fit=bic_best,
+        reference_fit=reference_fit,
+        stable_order_fits=stable_order_fits,
+        stability_tolerance=stability_tolerance,
+        harmonic_significance_threshold=harmonic_significance_threshold,
+    )
 
 
 def estimate_period_uncertainty(
