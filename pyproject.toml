@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asteroid-lightcurve"
-version = "0.1.0"
+version = "1.0.0"
 description = "Analyse de courbes de lumiere CCD d'asteroides"
 requires-python = ">=3.9"
 dependencies = [
