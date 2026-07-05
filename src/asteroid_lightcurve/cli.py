@@ -224,11 +224,11 @@ def residual_filter_from_fit(
     min_points: int,
 ) -> ResidualFilter:
     if sigma <= 0:
-        raise ValueError("--binary-filter-sigma doit etre strictement positif")
+        raise ValueError("--residual-filter-sigma doit etre strictement positif")
     if threshold_mag is not None and threshold_mag <= 0:
-        raise ValueError("--binary-filter-threshold-mag doit etre strictement positif")
+        raise ValueError("--residual-filter-threshold-mag doit etre strictement positif")
     if not 0.0 < max_reject_fraction < 1.0:
-        raise ValueError("--binary-filter-max-reject-fraction doit etre dans ]0,1[")
+        raise ValueError("--residual-filter-max-reject-fraction doit etre dans ]0,1[")
 
     residuals = np.asarray(fit.residuals, dtype=float)
     center = float(np.nanmedian(residuals))
@@ -253,7 +253,7 @@ def residual_filter_from_fit(
     keep_mask = ~reject_mask
     if int(np.sum(keep_mask)) < min_points:
         raise RuntimeError(
-            f"Filtrage binaire abandonne: {int(np.sum(keep_mask))} points conserves, "
+            f"Filtrage robuste des residus abandonne: {int(np.sum(keep_mask))} points conserves, "
             f"minimum requis {min_points}"
         )
 
@@ -268,7 +268,7 @@ def residual_filter_from_fit(
     )
 
 
-def write_binary_filter_summary(path: Path, curve: LightCurve, result: ResidualFilter, sigma: float) -> None:
+def write_residual_filter_summary(path: Path, curve: LightCurve, result: ResidualFilter, sigma: float) -> None:
     rejected = int(np.sum(result.reject_mask))
     kept = int(np.sum(result.keep_mask))
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -504,8 +504,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     produced_files: list[str] = []
     ephemerides: list[FileEphemeris] = []
     hjd_correction: HjdCorrection | None = None
-    if args.binary_filter and fixed_period_days is not None:
-        raise SystemExit("--binary-filter necessite une recherche de periode, pas --period")
+    if args.residual_filter and fixed_period_days is not None:
+        raise SystemExit("--residual-filter necessite une recherche de periode, pas --period")
 
     if not args.no_ephemeris:
         print("Recuperation des positions RA/DEC par fichier via JPL Horizons...")
@@ -576,102 +576,102 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     write_order_summary(outdir / "fourier_order_summary.csv", order_bests)
 
-    binary_filter_result: ResidualFilter | None = None
-    binary_best = None
-    binary_amplitude_mag: float | None = None
-    if args.binary_filter:
-        binary_filter_result = residual_filter_from_fit(
+    residual_filter_result: ResidualFilter | None = None
+    residual_best = None
+    residual_amplitude_mag: float | None = None
+    if args.residual_filter:
+        residual_filter_result = residual_filter_from_fit(
             best,
-            sigma=args.binary_filter_sigma,
-            threshold_mag=args.binary_filter_threshold_mag,
-            max_reject_fraction=args.binary_filter_max_reject_fraction,
-            min_points=args.binary_filter_min_points,
+            sigma=args.residual_filter_sigma,
+            threshold_mag=args.residual_filter_threshold_mag,
+            max_reject_fraction=args.residual_filter_max_reject_fraction,
+            min_points=args.residual_filter_min_points,
         )
-        write_binary_filter_summary(
-            outdir / "binary_filter_summary.csv",
+        write_residual_filter_summary(
+            outdir / "residual_filter_summary.csv",
             curve,
-            binary_filter_result,
-            args.binary_filter_sigma,
+            residual_filter_result,
+            args.residual_filter_sigma,
         )
         plot_residual_filter(
             curve,
             best,
-            binary_filter_result.reject_mask,
-            binary_filter_result.residual_center,
-            binary_filter_result.threshold_mag,
-            outdir / "binary_filter_rejected_points.png",
+            residual_filter_result.reject_mask,
+            residual_filter_result.residual_center,
+            residual_filter_result.threshold_mag,
+            outdir / "residual_filter_rejected_points.png",
         )
-        produced_files.append("binary_filter_summary.csv")
-        produced_files.append("binary_filter_rejected_points.png")
+        produced_files.append("residual_filter_summary.csv")
+        produced_files.append("residual_filter_rejected_points.png")
 
-        if np.any(binary_filter_result.reject_mask):
-            filtered_curve = subset_lightcurve(curve, binary_filter_result.keep_mask)
+        if np.any(residual_filter_result.reject_mask):
+            filtered_curve = subset_lightcurve(curve, residual_filter_result.keep_mask)
             (
-                binary_best,
-                binary_order_bests,
-                binary_candidate_fits,
-                _binary_gls_candidates,
-                _binary_gls_best_period,
-                _binary_gls,
-            ) = run_period_search(filtered_curve, args, outdir, prefix="binary_filtered_")
-            binary_raw_uncertainty = estimate_period_uncertainty(filtered_curve, binary_best, delta_chi2=1.0)
-            binary_scaled_delta = max(1.0, binary_best.reduced_chi2)
-            binary_scaled_uncertainty = estimate_period_uncertainty(
+                residual_best,
+                residual_order_bests,
+                residual_candidate_fits,
+                _residual_gls_candidates,
+                _residual_gls_best_period,
+                _residual_gls,
+            ) = run_period_search(filtered_curve, args, outdir, prefix="residual_filtered_")
+            residual_raw_uncertainty = estimate_period_uncertainty(filtered_curve, residual_best, delta_chi2=1.0)
+            residual_scaled_delta = max(1.0, residual_best.reduced_chi2)
+            residual_scaled_uncertainty = estimate_period_uncertainty(
                 filtered_curve,
-                binary_best,
-                delta_chi2=binary_scaled_delta,
+                residual_best,
+                delta_chi2=residual_scaled_delta,
             )
-            binary_amplitude_mag = model_amplitude(binary_best)
+            residual_amplitude_mag = model_amplitude(residual_best)
             plot_folded_lightcurve(
                 filtered_curve,
-                binary_best,
-                outdir / "binary_filtered_folded_lightcurve.png",
-                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+                residual_best,
+                outdir / "residual_filtered_folded_lightcurve.png",
+                period_uncertainty_days=residual_scaled_uncertainty.symmetric_days,
             )
             plot_folded_lightcurve(
                 filtered_curve,
-                binary_best,
-                outdir / "binary_filtered_folded_lightcurve_by_file.png",
+                residual_best,
+                outdir / "residual_filtered_folded_lightcurve_by_file.png",
                 by_file=True,
-                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+                period_uncertainty_days=residual_scaled_uncertainty.symmetric_days,
             )
             plot_folded_lightcurve_by_file_with_residuals(
                 filtered_curve,
-                binary_best,
-                outdir / "binary_filtered_folded_lightcurve_by_file_with_residuals.png",
-                period_uncertainty_days=binary_scaled_uncertainty.symmetric_days,
+                residual_best,
+                outdir / "residual_filtered_folded_lightcurve_by_file_with_residuals.png",
+                period_uncertainty_days=residual_scaled_uncertainty.symmetric_days,
             )
-            plot_residuals(filtered_curve, binary_best, outdir / "binary_filtered_residuals.png")
+            plot_residuals(filtered_curve, residual_best, outdir / "residual_filtered_residuals.png")
             write_period_summary(
-                outdir / "binary_filtered_period_summary.csv",
-                binary_best.period_days,
-                binary_amplitude_mag,
-                binary_raw_uncertainty,
-                binary_scaled_uncertainty,
+                outdir / "residual_filtered_period_summary.csv",
+                residual_best.period_days,
+                residual_amplitude_mag,
+                residual_raw_uncertainty,
+                residual_scaled_uncertainty,
             )
-            write_file_summary(outdir / "binary_filtered_file_summary.csv", filtered_curve, binary_best)
-            write_candidate_summary(outdir / "binary_filtered_period_order_candidates.csv", binary_candidate_fits)
-            write_order_summary(outdir / "binary_filtered_fourier_order_summary.csv", binary_order_bests)
+            write_file_summary(outdir / "residual_filtered_file_summary.csv", filtered_curve, residual_best)
+            write_candidate_summary(outdir / "residual_filtered_period_order_candidates.csv", residual_candidate_fits)
+            write_order_summary(outdir / "residual_filtered_fourier_order_summary.csv", residual_order_bests)
             write_residual_table(
-                outdir / "binary_filtered_residuals.csv",
+                outdir / "residual_filtered_residuals.csv",
                 filtered_curve,
-                binary_best,
+                residual_best,
                 hjd_correction,
-                source_mask=binary_filter_result.keep_mask,
+                source_mask=residual_filter_result.keep_mask,
             )
             produced_files.extend(
                 [
-                    "binary_filtered_gls_periodogram.png",
-                    "binary_filtered_fourier_period_search.png",
-                    "binary_filtered_folded_lightcurve.png",
-                    "binary_filtered_folded_lightcurve_by_file.png",
-                    "binary_filtered_folded_lightcurve_by_file_with_residuals.png",
-                    "binary_filtered_residuals.png",
-                    "binary_filtered_residuals.csv",
-                    "binary_filtered_period_summary.csv",
-                    "binary_filtered_file_summary.csv",
-                    "binary_filtered_period_order_candidates.csv",
-                    "binary_filtered_fourier_order_summary.csv",
+                    "residual_filtered_gls_periodogram.png",
+                    "residual_filtered_fourier_period_search.png",
+                    "residual_filtered_folded_lightcurve.png",
+                    "residual_filtered_folded_lightcurve_by_file.png",
+                    "residual_filtered_folded_lightcurve_by_file_with_residuals.png",
+                    "residual_filtered_residuals.png",
+                    "residual_filtered_residuals.csv",
+                    "residual_filtered_period_summary.csv",
+                    "residual_filtered_file_summary.csv",
+                    "residual_filtered_period_order_candidates.csv",
+                    "residual_filtered_fourier_order_summary.csv",
                 ]
             )
 
@@ -718,25 +718,25 @@ def cmd_search(args: argparse.Namespace) -> int:
     if scaled_delta > 1.0:
         print("Note: l'incertitude reechelonnee tient compte du chi2 reduit > 1.")
     print()
-    if binary_filter_result is not None:
-        print("=== Filtrage binaire ===")
+    if residual_filter_result is not None:
+        print("=== Filtrage robuste des residus ===")
         print(
-            f"Points rejetes: {int(np.sum(binary_filter_result.reject_mask))} / "
-            f"{binary_filter_result.reject_mask.size}"
+            f"Points rejetes: {int(np.sum(residual_filter_result.reject_mask))} / "
+            f"{residual_filter_result.reject_mask.size}"
         )
         print(
             "Seuil residu: "
-            f"{binary_filter_result.threshold_mag:.6f} mag "
-            f"({args.binary_filter_sigma:.2f} sigma robustes)"
+            f"{residual_filter_result.threshold_mag:.6f} mag "
+            f"({args.residual_filter_sigma:.2f} sigma robustes)"
         )
-        if binary_best is None:
+        if residual_best is None:
             print("Aucune nouvelle recherche lancee: aucun point rejete.")
         else:
-            print(f"Periode filtree: {format_period(binary_best.period_days)}")
-            print(f"Ordre filtre: {binary_best.order}")
-            if binary_amplitude_mag is not None:
-                print(f"Amplitude filtree: {binary_amplitude_mag:.3f} mag")
-            print(f"BIC filtre: {binary_best.bic:.6f}")
+            print(f"Periode filtree: {format_period(residual_best.period_days)}")
+            print(f"Ordre filtre: {residual_best.order}")
+            if residual_amplitude_mag is not None:
+                print(f"Amplitude filtree: {residual_amplitude_mag:.3f} mag")
+            print(f"BIC filtre: {residual_best.bic:.6f}")
         print()
     print("=== Fichiers produits ===")
     for name in produced_files:
@@ -780,32 +780,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.add_argument("--refine-samples", type=int, default=2000, help="Echantillons du raffinement")
     search_parser.add_argument(
-        "--binary-filter",
+        "--residual-filter",
         action="store_true",
         help="Apres la recherche initiale, rejeter les forts residus et relancer une recherche de periode",
     )
     search_parser.add_argument(
-        "--binary-filter-sigma",
+        "--residual-filter-sigma",
         type=float,
         default=3.5,
         help="Seuil robuste en sigma MAD pour rejeter les residus",
     )
     search_parser.add_argument(
-        "--binary-filter-threshold-mag",
+        "--residual-filter-threshold-mag",
         type=float,
         help="Seuil absolu de residu en magnitude; remplace le seuil sigma",
     )
     search_parser.add_argument(
-        "--binary-filter-max-reject-fraction",
+        "--residual-filter-max-reject-fraction",
         type=float,
         default=0.25,
-        help="Fraction maximale de points rejetes par le filtrage binaire",
+        help="Fraction maximale de points rejetes par le filtrage robuste des residus",
     )
     search_parser.add_argument(
-        "--binary-filter-min-points",
+        "--residual-filter-min-points",
         type=int,
         default=30,
-        help="Nombre minimal de points a conserver apres filtrage binaire",
+        help="Nombre minimal de points a conserver apres filtrage robuste des residus",
     )
     search_parser.add_argument("--keep-start-time", action="store_true", help="Ne pas convertir vers le milieu de pose")
     search_parser.add_argument(

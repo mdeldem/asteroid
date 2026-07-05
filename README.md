@@ -64,12 +64,12 @@ asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --gls-
 
 Le fichier `period_order_candidates.csv` liste tous les couples periode/ordre testes, avec la periode GLS d'origine, le multiplicateur, le chi2, l'AIC et le BIC. Il permet de verifier pourquoi une periode double de la meilleure periode GLS peut etre retenue.
 
-## Cas des asteroides binaires
+## Filtrage robuste des residus
 
-Pour rechercher une periode de rotation plus stable quand des eclipses, occultations ou signatures binaires creent de forts residus, on peut activer une deuxieme passe :
+Pour rechercher une periode de rotation plus stable quand certaines mesures creent de forts residus, on peut activer une deuxieme passe filtree :
 
 ```powershell
-asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --binary-filter --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --residual-filter --out output
 ```
 
 Le programme ajuste d'abord le meilleur modele, mesure les residus, rejette les points trop ecartes, puis relance la recherche de periode sur les points conserves. Par defaut, le seuil est robuste :
@@ -81,11 +81,11 @@ Le programme ajuste d'abord le meilleur modele, mesure les residus, rejette les 
 Ce seuil s'adapte au bruit de la courbe au lieu d'imposer une valeur fixe en magnitude. On peut le modifier, ou imposer un seuil absolu :
 
 ```powershell
-asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --binary-filter --binary-filter-sigma 4.0 --out output
-asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --binary-filter --binary-filter-threshold-mag 0.08 --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --residual-filter --residual-filter-sigma 4.0 --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --residual-filter --residual-filter-threshold-mag 0.08 --out output
 ```
 
-Par securite, le filtrage ne rejette pas plus de 25 % des points par defaut (`--binary-filter-max-reject-fraction`) et conserve au moins 30 mesures (`--binary-filter-min-points`). Le graphe `binary_filter_rejected_points.png` montre les points rejetes et les lignes de seuil. Les sorties de cette deuxieme passe sont separees avec le prefixe `binary_filtered_`, par exemple `binary_filtered_folded_lightcurve.png`, `binary_filtered_residuals.csv` et `binary_filtered_period_summary.csv`. Le fichier `binary_filter_summary.csv` resume le seuil et le nombre de points rejetes.
+Par securite, le filtrage ne rejette pas plus de 25 % des points par defaut (`--residual-filter-max-reject-fraction`) et conserve au moins 30 mesures (`--residual-filter-min-points`). Le graphe `residual_filter_rejected_points.png` montre les points rejetes et les lignes de seuil. Les sorties de cette deuxieme passe sont separees avec le prefixe `residual_filtered_`, par exemple `residual_filtered_folded_lightcurve.png`, `residual_filtered_residuals.csv` et `residual_filtered_period_summary.csv`. Le fichier `residual_filter_summary.csv` resume le seuil et le nombre de points rejetes.
 
 Pour afficher seulement un resume des fichiers :
 
