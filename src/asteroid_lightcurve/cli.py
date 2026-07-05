@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import platform
+import subprocess
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 
 import numpy as np
@@ -214,6 +220,85 @@ def write_order_summary(path: Path, order_bests) -> None:
                     f"{fit.bic:.6f}",
                 ]
             )
+
+
+def package_version() -> str | None:
+    try:
+        return metadata.version("asteroid-lightcurve")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def write_run_metadata(
+    path: Path,
+    args: argparse.Namespace,
+    input_paths: list[Path],
+    curve: LightCurve,
+    produced_files: list[str],
+    best,
+    residual_best,
+) -> None:
+    parameters = {
+        "files": list(args.files),
+        "min_period_days": args.min_period,
+        "max_period_days": args.max_period,
+        "period_days": args.period,
+        "samples": args.samples,
+        "orders": args.orders,
+        "gls_candidates": args.gls_candidates,
+        "gls_multipliers": list(args.gls_multipliers),
+        "refine_width": args.refine_width,
+        "candidate_refine_samples": args.candidate_refine_samples,
+        "refine_samples": args.refine_samples,
+        "residual_filter": args.residual_filter,
+        "residual_filter_sigma": args.residual_filter_sigma,
+        "residual_filter_threshold_mag": args.residual_filter_threshold_mag,
+        "residual_filter_max_reject_fraction": args.residual_filter_max_reject_fraction,
+        "residual_filter_min_points": args.residual_filter_min_points,
+        "keep_start_time": args.keep_start_time,
+        "no_ephemeris": args.no_ephemeris,
+        "horizons_timeout": args.horizons_timeout,
+        "out": args.out,
+    }
+    data = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "command": subprocess.list2cmdline(sys.argv),
+        "argv": sys.argv,
+        "package": {
+            "name": "asteroid-lightcurve",
+            "version": package_version(),
+        },
+        "python": {
+            "version": platform.python_version(),
+            "implementation": platform.python_implementation(),
+        },
+        "parameters": parameters,
+        "inputs": {
+            "patterns": list(args.files),
+            "expanded_files": [str(input_path) for input_path in input_paths],
+        },
+        "data": {
+            "n_files": len(curve.files),
+            "n_points": int(curve.n_points),
+            "baseline_days": float(curve.baseline_days),
+        },
+        "results": {
+            "period_days": float(best.period_days),
+            "period_hours": float(best.period_hours),
+            "fourier_order": int(best.order),
+            "reduced_chi2": float(best.reduced_chi2),
+            "aic": float(best.aic),
+            "bic": float(best.bic),
+            "residual_filtered_period_days": None if residual_best is None else float(residual_best.period_days),
+            "residual_filtered_period_hours": None if residual_best is None else float(residual_best.period_hours),
+            "residual_filtered_fourier_order": None if residual_best is None else int(residual_best.order),
+            "residual_filtered_bic": None if residual_best is None else float(residual_best.bic),
+        },
+        "produced_files": produced_files,
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
 
 
 def residual_filter_from_fit(
@@ -674,6 +759,9 @@ def cmd_search(args: argparse.Namespace) -> int:
                     "residual_filtered_fourier_order_summary.csv",
                 ]
             )
+
+    produced_files.append("run_metadata.json")
+    write_run_metadata(outdir / "run_metadata.json", args, paths, curve, produced_files, best, residual_best)
 
     print("=== Donnees ===")
     print(f"Fichiers: {len(curve.files)}")
