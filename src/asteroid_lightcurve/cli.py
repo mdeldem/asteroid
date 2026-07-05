@@ -973,7 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Periode imposee en jours; saute la recherche de periode",
     )
     search_parser.add_argument("--samples", type=int, default=8000, help="Nombre d'echantillons de periode")
-    search_parser.add_argument("--orders", default="1:12", help="Ordres Fourier, ex: 1:12 ou 4")
+    search_parser.add_argument("--orders", default="2:6", help="Ordres Fourier, ex: 2:6 ou 4")
     search_parser.add_argument("--gls-candidates", type=int, default=20, help="Nombre de pics GLS a tester")
     search_parser.add_argument(
         "--gls-multipliers",

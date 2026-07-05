@@ -47,16 +47,16 @@ asteroid-lc search data\*.txt --period 0.2106178 --no-ephemeris --out output
 Options utiles :
 
 ```powershell
-asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --orders 1:12 --samples 12000 --out output
+asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --orders 2:6 --samples 12000 --out output
 ```
 
 La recherche automatique suit une strategie robuste pour les courbes double-pic :
 
 ```text
-GLS -> meilleurs pics -> test de P/2, P et 2P -> ordres Fourier -> choix du BIC minimal
+GLS -> meilleurs pics -> test de P/2, P et 2P -> selection stable des ordres Fourier
 ```
 
-Par defaut, les 20 meilleurs pics GLS sont testes avec les multiplicateurs `0.5,1,2`. On peut ajuster ces parametres :
+Par defaut, les ordres Fourier `2:6` sont testes, et les 20 meilleurs pics GLS sont testes avec les multiplicateurs `0.5,1,2`. On peut ajuster ces parametres :
 
 ```powershell
 asteroid-lc search data\*.txt --min-period 0.083333 --max-period 0.833333 --gls-candidates 30 --gls-multipliers 0.5,1,2 --orders 2:8 --out output
