@@ -74,6 +74,14 @@ def aligned_model(curve: LightCurve, fit: FitResult) -> np.ndarray:
     return fit.model - offsets[curve.group]
 
 
+def plot_magnitudes(curve: LightCurve, fit: FitResult) -> tuple[np.ndarray, np.ndarray, float]:
+    mag_aligned = aligned_magnitudes(curve, fit)
+    model_aligned = aligned_model(curve, fit)
+    mag_obs = curve.mag_observed if curve.mag_observed is not None else curve.magnitude
+    shift = float(np.nanmedian(mag_obs) - np.nanmedian(mag_aligned))
+    return mag_aligned + shift, model_aligned + shift, shift
+
+
 def file_date_labels(curve: LightCurve) -> list[str]:
     dates: list[str] = []
     for group_id in range(len(curve.group_names)):
@@ -192,9 +200,9 @@ def model_at_phase(curve: LightCurve, fit: FitResult, model_phase: np.ndarray) -
 
 
 def folded_axis_limits(curve: LightCurve, fit: FitResult) -> tuple[tuple[float, float], tuple[float, float]]:
-    mag = aligned_magnitudes(curve, fit)
+    mag, _model_points, shift = plot_magnitudes(curve, fit)
     model_phase = np.linspace(0.0, 2.0, 600)
-    model = model_at_phase(curve, fit, model_phase)
+    model = model_at_phase(curve, fit, model_phase) + shift
     y_values = np.concatenate([mag - curve.mag_error, mag + curve.mag_error, model])
     y_min = float(np.nanmin(y_values))
     y_max = float(np.nanmax(y_values))
@@ -276,12 +284,12 @@ def plot_folded_lightcurve(
 ) -> None:
     ph = phase(curve.jd, fit.period_days)
     doubled_phase = np.concatenate([ph, ph + 1.0])
-    mag = aligned_magnitudes(curve, fit)
+    mag, _model_points, plot_shift = plot_magnitudes(curve, fit)
     doubled_mag = np.concatenate([mag, mag])
     doubled_err = np.concatenate([curve.mag_error, curve.mag_error])
 
     model_phase = np.linspace(0.0, 2.0, 600)
-    model = model_at_phase(curve, fit, model_phase)
+    model = model_at_phase(curve, fit, model_phase) + plot_shift
 
     fig, ax = plt.subplots(figsize=(13.5, 5.5))
     if by_file:
@@ -301,7 +309,7 @@ def plot_folded_lightcurve(
         add_file_legend(ax, curve, fit, uniform_style=True)
     ax.plot(model_phase, model, color="tab:red", lw=1.5)
     ax.set_xlabel("Phase")
-    ax.set_ylabel("Magnitude alignee")
+    ax.set_ylabel("Magnitude corrigee recentree sur m_obs")
     add_folded_title(ax, curve, fit, period_uncertainty_days)
     xlim, ylim = folded_axis_limits(curve, fit)
     ax.set_xlim(*xlim)
@@ -318,10 +326,10 @@ def plot_folded_lightcurve_by_file_with_residuals(
     path: str | Path,
     period_uncertainty_days: float | None = None,
 ) -> None:
-    mag = aligned_magnitudes(curve, fit)
-    residuals = mag - aligned_model(curve, fit)
+    mag, model_points, plot_shift = plot_magnitudes(curve, fit)
+    residuals = mag - model_points
     model_phase = np.linspace(0.0, 2.0, 600)
-    model = model_at_phase(curve, fit, model_phase)
+    model = model_at_phase(curve, fit, model_phase) + plot_shift
 
     fig, (ax_lc, ax_res) = plt.subplots(
         2,
@@ -338,7 +346,7 @@ def plot_folded_lightcurve_by_file_with_residuals(
     xlim, ylim = folded_axis_limits(curve, fit)
     ax_lc.set_xlim(*xlim)
     ax_lc.set_ylim(*ylim)
-    ax_lc.set_ylabel("Magnitude alignee")
+    ax_lc.set_ylabel("Magnitude corrigee recentree")
     ax_lc.grid(alpha=0.25)
     ax_lc.tick_params(labelbottom=False)
 

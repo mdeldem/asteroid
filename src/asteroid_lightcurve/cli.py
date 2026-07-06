@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .ephemeris import FileEphemeris, HjdCorrection, apply_hjd_correction, fetch_file_ephemerides
+from .ephemeris import FileEphemeris, HjdCorrection, apply_ephemeris_corrections, clear_correction_cache
 from .models import LightCurve, subset_lightcurve
 from .parser import expand_inputs, read_lightcurve
 from .period import (
@@ -29,12 +29,13 @@ from .period import (
 )
 from .plotting import (
     aligned_magnitudes,
-    aligned_model,
     ensure_outdir,
     file_date_labels,
     model_amplitude,
     per_file_scatter,
     format_period,
+    phase,
+    plot_magnitudes,
     plot_folded_lightcurve_by_file_with_residuals,
     plot_folded_lightcurve,
     plot_periodogram,
@@ -323,6 +324,8 @@ def write_run_metadata(
         "residual_filter_min_points": args.residual_filter_min_points,
         "keep_start_time": args.keep_start_time,
         "no_ephemeris": args.no_ephemeris,
+        "no_geometric_correction": args.no_geometric_correction,
+        "no_correction_cache": args.no_correction_cache,
         "horizons_timeout": args.horizons_timeout,
         "out": args.out,
     }
@@ -488,68 +491,82 @@ def write_residual_table(
     source_mask: np.ndarray | None = None,
 ) -> None:
     aligned_mag = aligned_magnitudes(curve, fit)
-    aligned_fit = aligned_model(curve, fit)
-    if source_mask is None:
-        if hjd_correction is None:
-            jd_utc_values = curve.jd
-            hjd_utc_values = curve.jd
-            correction_values = np.zeros_like(curve.jd)
-        else:
-            jd_utc_values = hjd_correction.jd_utc
-            hjd_utc_values = hjd_correction.hjd_utc
-            correction_values = hjd_correction.correction_days
-    else:
-        if hjd_correction is None:
-            jd_utc_values = curve.jd
-            hjd_utc_values = curve.jd
-            correction_values = np.zeros_like(curve.jd)
-        else:
-            jd_utc_values = hjd_correction.jd_utc[source_mask]
-            hjd_utc_values = hjd_correction.hjd_utc[source_mask]
-            correction_values = hjd_correction.correction_days[source_mask]
+    mag_plot, model_plot, _plot_shift = plot_magnitudes(curve, fit)
+    offsets = np.zeros(len(curve.group_names), dtype=float)
+    for group_id in range(1, len(curve.group_names)):
+        offsets[group_id] = fit.coefficients[group_id]
+
+    jd_utc_values = curve.jd_utc if curve.jd_utc is not None else curve.jd
+    hjd_utc_values = curve.jd
+    correction_values = curve.light_time_correction_days
+    if correction_values is None:
+        correction_values = np.zeros_like(curve.jd)
+    mag_obs_values = curve.mag_observed if curve.mag_observed is not None else curve.magnitude
+    mag_reduced_values = curve.mag_reduced if curve.mag_reduced is not None else curve.magnitude
+    r_values = curve.r_au if curve.r_au is not None else np.full_like(curve.jd, np.nan)
+    delta_values = curve.delta_au if curve.delta_au is not None else np.full_like(curve.jd, np.nan)
+    geometry_values = (
+        curve.geometry_correction if curve.geometry_correction is not None else np.zeros_like(curve.jd)
+    )
 
     with path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(
             [
+                "source_file",
                 "jd_utc",
                 "hjd_utc",
-                "hjd_correction_days",
-                "hjd_correction_seconds",
-                "magnitude",
-                "aligned_magnitude",
+                "light_time_correction_days",
+                "phase",
+                "mag_obs",
                 "mag_error",
-                "raw_model",
-                "aligned_model",
+                "r_au",
+                "delta_au",
+                "geometry_correction",
+                "mag_reduced",
+                "Zi",
+                "mag_aligned_reduced",
+                "mag_plot",
+                "model_plot",
                 "residual",
-                "file",
             ]
         )
-        for jd_utc, hjd_utc, correction_days, mag, aligned_mag_value, err, raw_model, aligned_model_value, residual, group in zip(
+        phases = phase(curve.jd, fit.period_days)
+        for group, jd_utc, hjd_utc, correction_days, ph, mag_obs, err, r_au, delta_au, geom, mag_reduced, aligned_mag_value, mag_plot_value, model_plot_value, residual in zip(
+            curve.group,
             jd_utc_values,
             hjd_utc_values,
             correction_values,
-            curve.magnitude,
-            aligned_mag,
+            phases,
+            mag_obs_values,
             curve.mag_error,
-            fit.model,
-            aligned_fit,
+            r_values,
+            delta_values,
+            geometry_values,
+            mag_reduced_values,
+            aligned_mag,
+            mag_plot,
+            model_plot,
             fit.residuals,
-            curve.group,
         ):
             writer.writerow(
                 [
+                    curve.group_names[int(group)],
                     f"{jd_utc:.8f}",
                     f"{hjd_utc:.8f}",
                     f"{correction_days:.10f}",
-                    f"{correction_days * 86400.0:.6f}",
-                    f"{mag:.6f}",
-                    f"{aligned_mag_value:.6f}",
+                    f"{ph:.8f}",
+                    f"{mag_obs:.6f}",
                     f"{err:.6f}",
-                    f"{raw_model:.6f}",
-                    f"{aligned_model_value:.6f}",
+                    "" if np.isnan(r_au) else f"{r_au:.10f}",
+                    "" if np.isnan(delta_au) else f"{delta_au:.10f}",
+                    f"{geom:.6f}",
+                    f"{mag_reduced:.6f}",
+                    f"{offsets[int(group)]:.6f}",
+                    f"{aligned_mag_value:.6f}",
+                    f"{mag_plot_value:.6f}",
+                    f"{model_plot_value:.6f}",
                     f"{residual:.6f}",
-                    curve.group_names[int(group)],
                 ]
             )
 
@@ -630,6 +647,8 @@ def write_ephemeris_by_file(
                 "mid_jd",
                 "ra_deg_icrf",
                 "dec_deg_icrf",
+                "r_au_mean",
+                "delta_au_mean",
                 "hjd_correction_mean_s",
                 "hjd_correction_min_s",
                 "hjd_correction_max_s",
@@ -653,6 +672,8 @@ def write_ephemeris_by_file(
                     f"{eph.mid_jd:.8f}",
                     f"{eph.ra_deg:.9f}",
                     f"{eph.dec_deg:.9f}",
+                    "" if eph.r_au is None else f"{eph.r_au:.10f}",
+                    "" if eph.delta_au is None else f"{eph.delta_au:.10f}",
                     mean_s,
                     min_s,
                     max_s,
@@ -676,6 +697,16 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clear_cache(args: argparse.Namespace) -> int:
+    data_dir = Path(args.data_dir).resolve()
+    if not data_dir.exists() or not data_dir.is_dir():
+        raise SystemExit(f"Dossier introuvable: {data_dir}")
+    count = clear_correction_cache(data_dir, dry_run=args.dry_run)
+    action = "seraient supprimes" if args.dry_run else "supprimes"
+    print(f"{count} fichier(s) de cache {action} dans {data_dir / 'cache'}")
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     paths = expand_inputs(args.files)
     curve = read_lightcurve(paths, use_mid_exposure=not args.keep_start_time)
@@ -688,9 +719,19 @@ def cmd_search(args: argparse.Namespace) -> int:
         raise SystemExit("--residual-filter necessite une recherche de periode, pas --period")
 
     if not args.no_ephemeris:
-        print("Recuperation des positions RA/DEC par fichier via JPL Horizons...")
-        ephemerides = fetch_file_ephemerides(curve, timeout=args.horizons_timeout)
-        hjd_correction = apply_hjd_correction(curve, ephemerides)
+        print("Recuperation des ephemerides et corrections via JPL Horizons/cache...")
+        ephemerides, hjd_correction = apply_ephemeris_corrections(
+            curve,
+            timeout=args.horizons_timeout,
+            use_cache=not args.no_correction_cache,
+            geometric_correction=not args.no_geometric_correction,
+        )
+    else:
+        curve.jd_utc = curve.jd.copy()
+        curve.light_time_correction_days = np.zeros_like(curve.jd)
+        curve.mag_observed = curve.mag_observed if curve.mag_observed is not None else curve.magnitude.copy()
+        curve.mag_reduced = curve.magnitude.copy()
+        curve.geometry_correction = np.zeros_like(curve.jd)
 
     selection: PeriodSelection | None = None
     if fixed_period_days is None:
@@ -963,6 +1004,11 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--keep-start-time", action="store_true", help="Ne pas convertir vers le milieu de pose")
     inspect_parser.set_defaults(func=cmd_inspect)
 
+    clear_cache_parser = subparsers.add_parser("clear-cache", help="Supprimer le cache de corrections")
+    clear_cache_parser.add_argument("data_dir", help="Dossier contenant les fichiers de mesures et le sous-dossier cache")
+    clear_cache_parser.add_argument("--dry-run", action="store_true", help="Compter sans supprimer")
+    clear_cache_parser.set_defaults(func=cmd_clear_cache)
+
     search_parser = subparsers.add_parser("search", help="Chercher la periode de rotation")
     search_parser.add_argument("files", nargs="+", help="Fichiers ou motifs glob")
     search_parser.add_argument("--min-period", type=float, help="Periode minimale en jours")
@@ -1021,7 +1067,17 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--no-ephemeris",
         action="store_true",
-        help="Ne pas interroger JPL Horizons pour les positions RA/DEC par fichier",
+        help="Ne pas interroger JPL Horizons et rester en JD/magnitude observee",
+    )
+    search_parser.add_argument(
+        "--no-geometric-correction",
+        action="store_true",
+        help="Diagnostic: conserver HJD/r/delta mais ne pas reduire les magnitudes par 5 log10(r delta)",
+    )
+    search_parser.add_argument(
+        "--no-correction-cache",
+        action="store_true",
+        help="Ne pas lire/ecrire le cache de corrections Horizons",
     )
     search_parser.add_argument(
         "--horizons-timeout",

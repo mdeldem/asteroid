@@ -76,6 +76,13 @@ class LightCurve:
     group_names: list[str]
     files: list[ObservationFile]
     time_label: str = "JD"
+    mag_observed: np.ndarray | None = None
+    mag_reduced: np.ndarray | None = None
+    geometry_correction: np.ndarray | None = None
+    r_au: np.ndarray | None = None
+    delta_au: np.ndarray | None = None
+    jd_utc: np.ndarray | None = None
+    light_time_correction_days: np.ndarray | None = None
 
     @property
     def n_points(self) -> int:
@@ -101,6 +108,9 @@ def subset_lightcurve(curve: LightCurve, mask: np.ndarray) -> LightCurve:
 
     files = [curve.files[group_id] for group_id in used_groups] if curve.files else []
 
+    def subset_optional(values: np.ndarray | None) -> np.ndarray | None:
+        return None if values is None else values[keep]
+
     return LightCurve(
         jd=curve.jd[keep],
         jd_decimals=curve.jd_decimals[keep],
@@ -110,4 +120,11 @@ def subset_lightcurve(curve: LightCurve, mask: np.ndarray) -> LightCurve:
         group_names=[curve.group_names[group_id] for group_id in used_groups],
         files=files,
         time_label=curve.time_label,
+        mag_observed=subset_optional(curve.mag_observed),
+        mag_reduced=subset_optional(curve.mag_reduced),
+        geometry_correction=subset_optional(curve.geometry_correction),
+        r_au=subset_optional(curve.r_au),
+        delta_au=subset_optional(curve.delta_au),
+        jd_utc=subset_optional(curve.jd_utc),
+        light_time_correction_days=subset_optional(curve.light_time_correction_days),
     )

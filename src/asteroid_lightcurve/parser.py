@@ -112,12 +112,14 @@ def read_lightcurve(paths: Iterable[str | Path], use_mid_exposure: bool = True) 
         group_parts.append(np.full(obs.jd.shape, group_id, dtype=int))
 
     order = np.argsort(np.concatenate(jd_parts))
+    magnitude = np.concatenate(mag_parts)[order]
     return LightCurve(
         jd=np.concatenate(jd_parts)[order],
         jd_decimals=np.concatenate(jd_decimal_parts)[order],
-        magnitude=np.concatenate(mag_parts)[order],
+        magnitude=magnitude,
         mag_error=np.concatenate(err_parts)[order],
         group=np.concatenate(group_parts)[order],
         group_names=group_names,
         files=files,
+        mag_observed=magnitude.copy(),
     )

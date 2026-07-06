@@ -13,8 +13,10 @@ L'application sait actuellement :
 - lire des fichiers texte de mesures au format `FMT xDVvx` ;
 - combiner plusieurs fichiers ou nuits d'observation ;
 - corriger les dates vers le milieu de pose ;
-- interroger JPL Horizons pour obtenir une position géocentrique RA/DEC par fichier ;
+- interroger JPL Horizons pour obtenir RA/DEC, distance héliocentrique `r` et distance observateur `Δ` ;
 - convertir les dates JD UTC en HJD géocentriques via une correction héliocentrique ;
+- appliquer une correction géométrique obligatoire de magnitude `5 log10(rΔ)` avant l'ajustement ;
+- mettre en cache par fichier les corrections indépendantes du fit ;
 - rechercher une période par une stratégie hybride GLS + Fourier ;
 - tester explicitement les ambiguïtés `P/2`, `P` et `2P` issues des courbes double-pic ;
 - ajuster une série de Fourier pondérée par les erreurs photométriques ;
@@ -57,7 +59,7 @@ asteroid-lightcurve/
 |---|---|
 | `models.py` | Structures de données : fichier d'observation, courbe combinée, sous-échantillonnage. |
 | `parser.py` | Lecture des fichiers `FMT`, expansion des motifs glob, construction d'une courbe multi-fichiers. |
-| `ephemeris.py` | Requête JPL Horizons, extraction RA/DEC, correction HJD. |
+| `ephemeris.py` | Requête JPL Horizons, extraction RA/DEC/r/Δ, correction HJD, correction géométrique et cache par fichier. |
 | `period.py` | Cœur algorithmique : grille de périodes, GLS simplifié, ajustement Fourier pondéré, critères AIC/AICc/BIC, sélection stable, incertitude. |
 | `plotting.py` | Production des figures PNG : périodogrammes, courbes repliées, résidus, filtrage. |
 | `cli.py` | Interface utilisateur, orchestration complète, génération des fichiers de sortie. |
@@ -128,9 +130,20 @@ group: np.ndarray
 group_names: list[str]
 files: list[ObservationFile]
 time_label: str = "JD"
+mag_observed: np.ndarray | None = None
+mag_reduced: np.ndarray | None = None
+geometry_correction: np.ndarray | None = None
+r_au: np.ndarray | None = None
+delta_au: np.ndarray | None = None
+jd_utc: np.ndarray | None = None
+light_time_correction_days: np.ndarray | None = None
 ```
 
-Le champ `group` associe chaque mesure à son fichier d'origine. C'est essentiel parce que le modèle Fourier peut inclure un **offset de magnitude par fichier**, afin de corriger les décalages de zéro photométrique entre nuits, observateurs, instruments ou filtres.
+Le champ `group` associe chaque mesure à son fichier d'origine. C'est essentiel parce que le modèle Fourier inclut un **offset de magnitude par fichier**, afin de corriger les décalages de zéro photométrique entre nuits, observateurs, instruments ou filtres.
+
+Après la lecture initiale, `magnitude` et `mag_observed` valent les magnitudes mesurées. Après correction géométrique, `magnitude` est remplacée par `mag_reduced` et devient la colonne utilisée par `weighted_fit()`. La magnitude observée originale reste disponible dans `mag_observed`.
+
+Les champs `r_au`, `delta_au`, `geometry_correction`, `jd_utc` et `light_time_correction_days` sont des corrections indépendantes du fit global. Ils peuvent être sauvegardés dans le cache par fichier. En revanche les offsets `Zi`, les magnitudes alignées, les résidus et le modèle Fourier ne doivent pas être stockés dans ce cache.
 
 Propriétés :
 
@@ -141,7 +154,7 @@ Propriétés :
 
 La fonction `subset_lightcurve(curve, mask)` construit une courbe filtrée en conservant seulement les points où `mask=True`.
 
-Elle recompacte les groupes afin que les fichiers conservés aient des identifiants consécutifs `0, 1, 2, ...`. Cette fonction est utilisée par le filtrage robuste des résidus.
+Elle recompacte les groupes afin que les fichiers conservés aient des identifiants consécutifs `0, 1, 2, ...`. Cette fonction est utilisée par le filtrage robuste des résidus et conserve aussi les champs optionnels de correction.
 
 ---
 
@@ -199,11 +212,14 @@ errors="replace"
 
 ---
 
-## 5. Correction temporelle JD → HJD
+## 5. Éphémérides, correction temporelle et correction géométrique
 
 ### 5.1 Requête JPL Horizons
 
-Par défaut, la commande `search` interroge JPL Horizons, sauf si `--no-ephemeris` est fourni.
+Par défaut, la commande `search` interroge JPL Horizons, sauf si `--no-ephemeris` est fourni. Cette étape sert à deux corrections distinctes :
+
+1. correction temporelle JD UTC vers HJD UTC ;
+2. correction géométrique des magnitudes par les distances Soleil-astéroïde et observateur-astéroïde.
 
 L'identifiant de l'astéroïde est extrait du champ `NOM` avec l'expression régulière :
 
@@ -229,17 +245,24 @@ Pour chaque fichier, l'application calcule le JD moyen :
 JD_\mathrm{mid,file} = \frac{\min(JD_i) + \max(JD_i)}{2}
 \]
 
-Puis elle demande à Horizons la position géocentrique de l'objet avec :
+Puis elle demande à Horizons la position géocentrique et les distances de l'objet avec :
 
 - `EPHEM_TYPE=OBSERVER` ;
 - `CENTER=500@399`, c'est-à-dire géocentre terrestre ;
-- `QUANTITIES=1`, position astrométrique RA/DEC ;
+- `QUANTITIES='1,19,20'`, position astrométrique RA/DEC, distances héliocentrique et observateur ;
 - `ANG_FORMAT=DEG` ;
 - `CSV_FORMAT=YES`.
 
-### 5.2 Extraction RA/DEC
+Le code évite une requête par point. Pour chaque fichier d'observation, il interroge Horizons au début et à la fin du fichier, puis interpole linéairement `r_au` et `delta_au` pour chaque mesure. Sur des fichiers de quelques heures, cette interpolation est suffisante pour l'objectif du projet.
 
-`parse_horizons_ra_dec()` extrait la table située entre `$$SOE` et `$$EOE`, parcourt les lignes, sépare sur les virgules, puis retourne les deux premières valeurs numériques trouvées. Dans le contexte de `QUANTITIES=1` et `ANG_FORMAT=DEG`, elles correspondent à RA et DEC en degrés.
+### 5.2 Extraction RA/DEC/r/Δ
+
+`parse_horizons_geometry()` extrait la table située entre `$$SOE` et `$$EOE`, parcourt les lignes, sépare sur les virgules, puis retourne pour chaque époque :
+
+- le JD Horizons ;
+- RA et DEC en degrés ;
+- `r_au`, distance Soleil-astéroïde en unités astronomiques ;
+- `delta_au`, distance observateur-astéroïde en unités astronomiques.
 
 ### 5.3 Correction héliocentrique
 
@@ -259,7 +282,95 @@ HJD_\mathrm{UTC} = JD_\mathrm{UTC} + \Delta t_\mathrm{helio}
 
 L'objet `LightCurve` est modifié en place : `curve.jd` devient `hjd_utc`, et `curve.time_label` devient `"HJD"`.
 
-### 5.4 Limites scientifiques de cette correction
+Les champs `jd_utc`, `hjd_utc` et `light_time_correction_days` sont conservés dans les sorties point par point et dans le cache de correction.
+
+### 5.4 Correction géométrique de magnitude
+
+Pour chaque mesure, le programme calcule :
+
+\[
+g_i = 5\log_{10}(r_i\Delta_i)
+\]
+
+puis :
+
+\[
+m_{\mathrm{reduced},i} = m_{\mathrm{obs},i} - g_i
+\]
+
+Cette correction est obligatoire en mode normal. Elle supprime la dérive lente due aux variations de distances pendant la campagne, sans chercher à estimer une magnitude absolue `H`.
+
+Point important : `mag_reduced` peut être très différente de `mag_obs`. Par exemple une magnitude observée autour de `11.7` peut devenir environ `7.8`. C'est normal physiquement. Les graphes finaux ne sont toutefois pas centrés sur cette valeur brute : ils sont recentrés globalement autour de la magnitude observée.
+
+### 5.5 Cache de correction par fichier
+
+Pour éviter de refaire les mêmes requêtes Horizons, `ephemeris.py` écrit un cache dans un sous-dossier `cache` du répertoire de données :
+
+```text
+data/
+  obs_001.txt
+  cache/
+    obs_001.<hash>.correction-cache.csv
+    obs_001.<hash>.correction-cache.json
+```
+
+Le hash court est calculé à partir du chemin absolu normalisé, afin d'éviter les collisions entre fichiers de même nom dans des dossiers différents.
+
+Le CSV de cache contient uniquement des valeurs indépendantes du fit :
+
+```text
+jd_utc
+hjd_utc
+light_time_correction_days
+mag_obs
+mag_error
+r_au
+delta_au
+geometry_correction
+mag_reduced
+```
+
+Le JSON adjacent contient les métadonnées de validation :
+
+- fichier source ;
+- chemin absolu ;
+- taille ;
+- `mtime_ns` ;
+- commande Horizons de l'objet ;
+- centre observateur ;
+- version de correction.
+
+Le cache est invalidé si le fichier source change, si l'objet change ou si `correction_version` change.
+
+Le cache ne doit jamais contenir :
+
+- `Zi` ;
+- `block_offset` ;
+- `mag_aligned` ;
+- `mag_plot` ;
+- résidus ;
+- modèle Fourier ;
+- période ou ordre Fourier.
+
+Ces valeurs dépendent du fit global et peuvent changer si l'utilisateur modifie les fichiers inclus, les ordres Fourier, les bornes de période, les pondérations ou le filtrage.
+
+### 5.6 Commande de purge du cache
+
+La commande dédiée est :
+
+```bash
+asteroid-lc clear-cache data/
+```
+
+Avec :
+
+```bash
+asteroid-lc clear-cache data/ --dry-run
+```
+
+elle compte les fichiers qui seraient supprimés sans toucher au cache. La commande ne supprime jamais les fichiers source d'observation.
+
+### 5.7 Limites scientifiques de cette correction
 
 Le calcul est une correction héliocentrique en direction de la position RA/DEC de l'astéroïde. Or un astéroïde se déplace pendant la campagne. Le projet approxime sa position par **une RA/DEC par fichier**, évaluée au milieu de l'intervalle du fichier. C'est généralement raisonnable pour des fichiers couvrant une nuit courte, mais ce n'est pas une correction topocentrique complète observatoire par observatoire.
 
@@ -269,25 +380,27 @@ Pour une évolution future, Codex pourrait ajouter :
 - une RA/DEC interpolée pour chaque point au lieu d'une RA/DEC constante par fichier ;
 - une option BJD_TDB pour des analyses plus précises.
 
+Le projet n'implémente volontairement pas de modèle de phase `H,G`, `H,G1,G2`, `H,G12`, de coefficient `β`, de magnitude absolue `H`, ni de combinaison multi-opposition. L'objectif reste la période synodique issue des données fournies.
+
 ---
 
 ## 6. Modèle photométrique ajusté
 
 ### 6.1 Modèle Fourier
 
-Le cœur du modèle est une série de Fourier tronquée à l'ordre `M` :
+Le cœur du modèle est une série de Fourier tronquée à l'ordre `M`, ajustée sur les magnitudes réduites :
 
 \[
-m(t_i) = c_0 + \Delta_{g_i} + \sum_{k=1}^{M}\left[a_k \cos\left(2\pi k \frac{t_i-t_0}{P}\right) + b_k \sin\left(2\pi k \frac{t_i-t_0}{P}\right)\right]
+m_{\mathrm{reduced},i} = c_0 + Z_{g_i} + \sum_{k=1}^{M}\left[a_k \cos\left(2\pi k \frac{t_i-t_0}{P}\right) + b_k \sin\left(2\pi k \frac{t_i-t_0}{P}\right)\right] + \epsilon_i
 \]
 
 où :
 
-- `m(t_i)` est la magnitude mesurée au temps `t_i` ;
+- `m_reduced,i` est la magnitude observée corrigée de `5 log10(rΔ)` ;
 - `P` est la période testée ;
 - `M` est l'ordre de Fourier ;
 - `c0` est l'offset global ;
-- `Δ_g` est l'offset photométrique du fichier/groupe `g` ;
+- `Z_g` est l'offset photométrique du fichier/groupe `g` ;
 - le groupe `0` sert de référence, donc il n'a pas de colonne offset dédiée ;
 - `a_k` et `b_k` sont les coefficients harmoniques.
 
@@ -503,6 +616,8 @@ Cette stratégie permet de traiter :
 - les cas où un alias ou une harmonique inverse demande de tester `P/2`.
 
 Le code évite les doublons avec une tolérance relative d'environ `1 / n_samples`.
+
+Les offsets par fichier ne sont jamais pré-calculés par moyenne ou médiane de fichier. Ils sont des paramètres libres de la même résolution linéaire que les coefficients Fourier. Cette contrainte est importante : un fichier peut couvrir préférentiellement un maximum, un minimum ou une branche de la courbe, et sa médiane peut alors contenir une partie réelle du signal de rotation.
 
 ### 8.5 Raffinement local des candidats
 
@@ -772,15 +887,35 @@ Les graphiques de courbe repliée affichent généralement deux cycles :
 
 Cela améliore la lisibilité des courbes double-pic.
 
-### 13.2 Magnitudes alignées
+### 13.2 Magnitudes alignées et affichage recentré
 
 Pour retirer les offsets par fichier, le projet calcule :
 
 \[
-m_{i,\mathrm{aligned}} = m_i - \Delta_{g_i}
+m_{i,\mathrm{aligned,reduced}} = m_{\mathrm{reduced},i} - Z_{g_i}
 \]
 
 Le groupe 0 a un offset nul par convention.
+
+Le fit travaille sur `mag_reduced`, mais cette grandeur peut être visuellement déroutante car elle est ramenée aux distances unitaires. Pour les graphes principaux, le code calcule donc une constante globale :
+
+\[
+s = \mathrm{median}(m_\mathrm{obs}) - \mathrm{median}(m_\mathrm{aligned,reduced})
+\]
+
+puis affiche :
+
+\[
+m_\mathrm{plot} = m_\mathrm{aligned,reduced} + s
+\]
+
+et applique le même `s` au modèle aligné. Ce décalage est unique pour toute la courbe : il ne dépend pas du fichier. Les résidus sont inchangés, car le même décalage global est appliqué aux points et au modèle.
+
+À ne pas faire :
+
+- recentrer fichier par fichier ;
+- soustraire une moyenne ou médiane par fichier avant le fit ;
+- calculer `mag_plot` avant que les offsets `Zi` aient été ajustés.
 
 ### 13.3 Amplitude
 
@@ -876,7 +1011,9 @@ asteroid-lc search FILES... --period PERIOD [options]
 | Option | Type | Défaut | Description |
 |---|---:|---:|---|
 | `--keep-start-time` | flag | `False` | Ne pas convertir au milieu de pose. |
-| `--no-ephemeris` | flag | `False` | Désactive Horizons et reste en JD. |
+| `--no-ephemeris` | flag | `False` | Désactive Horizons et reste en JD/magnitude observée. |
+| `--no-geometric-correction` | flag | `False` | Diagnostic : conserve HJD/r/Δ mais n'applique pas `5 log10(rΔ)`. |
+| `--no-correction-cache` | flag | `False` | Ne lit ni n'écrit le cache de corrections Horizons. |
 | `--horizons-timeout` | float | `30.0` | Timeout des appels Horizons en secondes. |
 
 #### Options de sortie
@@ -884,6 +1021,22 @@ asteroid-lc search FILES... --period PERIOD [options]
 | Option | Type | Défaut | Description |
 |---|---:|---:|---|
 | `--out` | str | `output` | Répertoire de sortie. |
+
+### 14.3 `clear-cache`
+
+Syntaxe :
+
+```bash
+asteroid-lc clear-cache DATA_DIR [--dry-run]
+```
+
+But : supprimer les fichiers du sous-dossier `DATA_DIR/cache` créés pour les corrections Horizons/géométriques. Cette commande ne supprime pas les fichiers d'observation source.
+
+Option :
+
+| Option | Effet |
+|---|---|
+| `--dry-run` | Compte les fichiers de cache sans les supprimer. |
 
 ---
 
@@ -895,8 +1048,8 @@ asteroid-lc search FILES... --period PERIOD [options]
 |---|---|---|
 | `gls_periodogram.png` | recherche automatique | Score GLS en fonction de la période. |
 | `fourier_period_search.png` | recherche automatique | Score `-BIC` à l'ordre Fourier retenu. |
-| `folded_lightcurve.png` | toujours | Courbe repliée alignée, tous points ensemble. |
-| `folded_lightcurve_by_file.png` | toujours | Courbe repliée avec style/couleur par fichier. |
+| `folded_lightcurve.png` | toujours | Courbe repliée corrigée géométriquement, alignée puis recentrée globalement. |
+| `folded_lightcurve_by_file.png` | toujours | Courbe repliée corrigée, avec style/couleur par fichier. |
 | `folded_lightcurve_by_file_with_residuals.png` | toujours | Courbe repliée + panneau de résidus en phase. |
 | `residuals.png` | toujours | Résidus en fonction du temps et de la phase. |
 | `residual_filter_rejected_points.png` | si filtrage | Points rejetés sur résidus vs temps et phase. |
@@ -910,8 +1063,8 @@ asteroid-lc search FILES... --period PERIOD [options]
 | `period_order_candidates.csv` | Tous les couples candidat période/ordre testés, triés par BIC. |
 | `fourier_order_summary.csv` | Meilleur candidat par ordre Fourier. |
 | `period_selection_summary.csv` | Décision de sélection stable période/ordre. |
-| `residuals.csv` | Table point par point : JD, HJD, magnitude, modèle, résidu, fichier. |
-| `ephemeris_by_file.csv` | RA/DEC Horizons par fichier et statistiques de correction HJD. |
+| `residuals.csv` | Table point par point : fichier, JD/HJD, phase, `mag_obs`, `r`, `Δ`, correction géométrique, `mag_reduced`, `Zi`, `mag_plot`, modèle, résidu. |
+| `ephemeris_by_file.csv` | RA/DEC, `r`, `Δ` Horizons par fichier et statistiques de correction HJD. |
 | `residual_filter_summary.csv` | Nombre de points rejetés, seuils et dispersion robuste. |
 
 Les CSV sont écrits en `utf-8-sig`, séparateur `;`, ce qui facilite l'ouverture dans Excel en environnement français.
@@ -953,8 +1106,10 @@ read_lightcurve()
 correction milieu de pose, sauf --keep-start-time
   ↓
 si pas --no-ephemeris :
-    fetch_file_ephemerides()
-    apply_hjd_correction()
+    apply_ephemeris_corrections()
+    charge ou écrit cache par fichier
+    jd devient hjd_utc
+    magnitude devient mag_reduced
   ↓
 period_grid(min,max,samples)
   ↓
@@ -992,6 +1147,7 @@ expand_inputs()
 read_lightcurve()
   ↓
 correction HJD éventuelle
+correction géométrique éventuelle, sauf --no-ephemeris ou diagnostic --no-geometric-correction
   ↓
 search_fourier(curve, [period], orders)
   ↓
@@ -1110,21 +1266,22 @@ La correction est géocentrique. Pour des astéroïdes proches et rapides, ou de
 
 La position de l'astéroïde est supposée constante dans chaque fichier pour la correction HJD. Cela peut être insuffisant pour des objets rapides ou des fichiers couvrant une longue durée.
 
-### 19.7 Pas de correction de distance/phase photométrique
+### 19.7 Correction de distance sans modèle de phase
 
-Le projet ne corrige pas encore la variation de magnitude due :
+Le projet corrige maintenant la variation de magnitude due :
 
-- à la distance géocentrique `Δ` ;
 - à la distance héliocentrique `r` ;
-- à l'angle de phase solaire `α`.
+- à la distance observateur-astéroïde `Δ`.
 
-Pour des campagnes longues, il faudrait ajouter une correction de type :
+La correction appliquée est :
 
 \[
-H(\alpha) = m - 5\log_{10}(r\Delta)
+m_\mathrm{reduced} = m_\mathrm{obs} - 5\log_{10}(r\Delta)
 \]
 
-puis éventuellement un modèle de phase `H-G`, `H-G1-G2`, ou une tendance linéaire locale en angle de phase.
+Le projet ne corrige pas l'angle de phase solaire `α`. C'est volontaire : l'objectif est la recherche de période synodique sur une seule opposition, pas l'estimation d'une magnitude absolue ou d'un modèle physique de phase.
+
+Pour des campagnes très longues à l'intérieur d'une même opposition, une évolution future pourrait ajouter une tendance lente optionnelle en temps ou en angle de phase. Elle devrait rester séparée des offsets par fichier et ne pas introduire de modèle `H-G`.
 
 ### 19.8 Petite anomalie d'affichage console
 
@@ -1207,32 +1364,30 @@ Critères à ajouter :
 
 ---
 
-## 21. Extension recommandée : correction distance/phase
+## 21. Extension recommandée : tendance de phase locale optionnelle
 
-Pour améliorer l'analyse de campagnes multi-nuits ou multi-semaines, ajouter une correction de magnitude indépendante de la rotation :
+La correction géométrique en `5 log10(rΔ)` est déjà implémentée. Pour améliorer l'analyse de campagnes longues sur une même opposition, une extension possible serait une tendance de phase locale indépendante de la rotation :
 
-1. récupérer depuis Horizons `r`, `Δ`, `α` pour chaque fichier ou point ;
-2. calculer une magnitude réduite :
+1. récupérer depuis Horizons l'angle de phase `α` en plus de `r` et `Δ` ;
+2. conserver la magnitude réduite actuelle :
 
 \[
 m(1,1,\alpha) = m - 5\log_{10}(r\Delta)
 \]
 
-3. ajuster une correction de phase :
+3. ajuster éventuellement une tendance locale :
 
 \[
 m_\mathrm{corr} = m(1,1,\alpha) - \beta \alpha
 \]
 
-ou utiliser un modèle `H-G`.
-
-Alternative intégrée au modèle : ajouter une tendance linéaire en temps ou en angle de phase :
+ou ajouter une tendance linéaire directement au modèle :
 
 \[
 m(t) = Fourier(P) + offsets + c_1(t-t_0)
 \]
 
-Cela peut éviter que les harmoniques absorbent une dérive lente non rotationnelle.
+Cette extension ne doit pas transformer le projet en logiciel de magnitude absolue. Les modèles `H-G`, `H-G1,G2`, `H-G12`, les corrections d'aspect et les combinaisons multi-opposition restent hors périmètre.
 
 ---
 
@@ -1260,12 +1415,15 @@ order_stability_score = fraction de bootstrap retrouvant même période ± tolé
 ### Ce que fait déjà l'application
 
 ```text
-Lire fichiers CCD → combiner nuits → corriger temps → HJD optionnel → GLS ordre 1 → pics candidats → tester P/2,P,2P → ajuster Fourier pondéré avec offsets → sélectionner période stable et ordre significatif → exporter graphes/CSV/JSON.
+Lire fichiers CCD → combiner nuits → Horizons/cache → HJD + correction géométrique → GLS ordre 1 → pics candidats → tester P/2,P,2P → ajuster Fourier pondéré avec offsets par fichier → recentrer l'affichage sur mag_obs → sélectionner période stable et ordre significatif → exporter graphes/CSV/JSON.
 ```
 
 ### Ce qu'il faut préserver
 
 - Les offsets par fichier ;
+- La correction géométrique `mag_reduced = mag_obs - 5 log10(rΔ)` avant le fit ;
+- Le recentrage d'affichage global, jamais par fichier ;
+- Le cache sans valeurs dépendantes du fit ;
 - La grille uniforme en fréquence ;
 - La stratégie explicite contre l'ambiguïté double-pic ;
 - La sélection hiérarchique ordre bas → famille stable → harmonique significatif ;
@@ -1275,8 +1433,8 @@ Lire fichiers CCD → combiner nuits → corriger temps → HJD optionnel → GL
 ### Ce qu'il faut améliorer en priorité
 
 1. rendre l'encodage portable ;
-2. ajouter des tests unitaires ;
-3. ajouter correction distance/phase ;
+2. élargir les tests unitaires ;
+3. ajouter une tendance de phase locale optionnelle, sans modèle `H-G` ;
 4. ajouter analyse secondaire des résidus pour binaires ;
 5. ajouter une option de coordonnées observatoire pour correction topocentrique ;
 6. ajouter des diagnostics d'alias ;
@@ -1318,6 +1476,23 @@ asteroid-lc search data/*.txt \
   --max-period 0.833333 \
   --no-ephemeris \
   --out output
+```
+
+### Diagnostic sans correction géométrique
+
+```bash
+asteroid-lc search data/*.txt \
+  --min-period 0.083333 \
+  --max-period 0.833333 \
+  --no-geometric-correction \
+  --out output_no_geom
+```
+
+### Purge du cache de corrections
+
+```bash
+asteroid-lc clear-cache data/ --dry-run
+asteroid-lc clear-cache data/
 ```
 
 ### Filtrage robuste des résidus
